@@ -6,3 +6,6 @@ tqdm
 gurobipy
 kneed
 imageio
+torch
+tensorboard
+standard-imghdr
