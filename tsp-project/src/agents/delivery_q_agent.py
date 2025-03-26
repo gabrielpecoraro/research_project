@@ -2,8 +2,27 @@ import numpy as np
 import math
 from scipy.spatial.distance import cdist
 
+
 class DeliveryQAgent:
-    def __init__(self, xy, max_box, method, boundary_index, boundary_points, mydict, labels, n_cluster, simplices, vertices, states_size, actions_size, alpha=1, beta=1, gamma=0.9, lr=0.6):
+    def __init__(
+        self,
+        xy,
+        max_box,
+        method,
+        boundary_index,
+        boundary_points,
+        mydict,
+        labels,
+        n_cluster,
+        simplices,
+        vertices,
+        states_size,
+        actions_size,
+        alpha=1,
+        beta=1,
+        gamma=0.9,
+        lr=0.6,
+    ):
         self.xy = xy
         self.method = method
         self.boundary_index = boundary_index
@@ -21,7 +40,9 @@ class DeliveryQAgent:
         self.lr = lr
         self.max_box = max_box
         self.iter_num = 1
-        self.Q, self.visits, self.Qupdate, self.rewards = self.build_model(states_size, actions_size)
+        self.Q, self.visits, self.Qupdate, self.rewards = self.build_model(
+            states_size, actions_size
+        )
         self.route = ""
         self.end = 0
         self.timestep = 0
@@ -41,6 +62,7 @@ class DeliveryQAgent:
         self.best_tour = [(-1, 1)]
         self.once = True
         self.Q2 = self.Q.copy()
+        self.memory = []
 
     def build_model(self, states_size, actions_size):
         Q = cdist(self.xy, self.xy)
@@ -57,25 +79,34 @@ class DeliveryQAgent:
                     Q[i, j] = -np.inf
         return Q, visits, update, rewards
 
-    def act(self, s):
-        q = np.copy(self.Q[s, :])
-        self.timestep += 1
-        q[self.states_memory] = -np.inf
-        self.states_track = self.states_memory.copy()
-        if np.random.rand() > self.epsilon:
-            a = np.argmax(q)
+    def act(self, state):
+        """Choose an action using epsilon-greedy policy"""
+        if np.random.random() < self.epsilon:
+            # Explore: choose a random action
+            return np.random.randint(self.actions_size)
         else:
-            a = np.random.choice([i for i in range(self.actions_size) if i not in self.states_memory])
-        self.route += "=>" + str(a)
-        self.visits.update({(s, a): self.visits[(s, a)] + 1})
-        return a
+            # Exploit: choose the best action based on Q-values
+            return np.argmax(self.Q[state])
 
     def remember_state(self, s):
         self.states_memory.append(s)
 
     def reset_memory(self):
+        """Reset the agent's memory at the start of each episode"""
+        self.memory = []
         self.states_memory = []
         self.route = ""
+
+    def train(self, state, new_state, reward):
+        """Update Q-values using Q-learning algorithm"""
+        if self.method == "cluster":
+            # Q-learning update rule
+            old_value = self.Q[state, new_state]
+            next_max = np.max(self.Q[new_state])
+            new_value = (1 - self.lr) * old_value + self.lr * (
+                reward + self.gamma * next_max
+            )
+            self.Q[state, new_state] = new_value
 
     def updateQ(self):
         self.i += 1

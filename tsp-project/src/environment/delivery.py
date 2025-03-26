@@ -4,9 +4,13 @@ import math
 from scipy.spatial.distance import cdist
 from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection
+from matplotlib import pyplot as plt
+
 
 class Delivery:
-    def __init__(self, xy, boundary_index, n_stops, max_box, fixed, type="nfixed", **kwargs):
+    def __init__(
+        self, xy, boundary_index, n_stops, max_box, fixed, type="nfixed", **kwargs
+    ):
         self.n_stops = n_stops
         self.action_space = self.n_stops
         self.observation_space = self.n_stops
@@ -42,7 +46,13 @@ class Delivery:
             ax.annotate("START", xy=xy, xytext=xytext, weight="bold")
 
         if len(self.stops) > 1:
-            ax.plot(self.x[self.stops], self.y[self.stops], c="blue", linewidth=1, linestyle="--")
+            ax.plot(
+                self.x[self.stops],
+                self.y[self.stops],
+                c="blue",
+                linewidth=1,
+                linestyle="--",
+            )
             xy = self._get_xy(initial=False)
             xytext = xy[0] + 0.1, xy[1] - 0.05
             ax.annotate("END", xy=xy, xytext=xytext, weight="bold")
