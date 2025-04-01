@@ -32,7 +32,7 @@ def main():
         epsilon_start = 1.0
         epsilon_end = 0.01
         epsilon_decay = 0.995
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device("mps" if torch.mps.is_available() else "cpu")
         writer = SummaryWriter("runs/tsp_training")
 
         # Generate random coordinates
