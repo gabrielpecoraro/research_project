@@ -5,7 +5,16 @@ from scipy.spatial.distance import cdist
 from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection
 from matplotlib import pyplot as plt
+import matplotlib  # <— add
+import logging
+
+logger = logging.getLogger(__name__)
+# force a simple sans‐serif so FT2Font won’t choke
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["DejaVu Sans", "Arial", "Liberation Sans"]
+
 import torch
+from utils.rewards import RewardModel
 
 
 class Delivery:
@@ -19,23 +28,50 @@ class Delivery:
         grid_size=3,  # Changed to 3x3
         block_size=4,
         type="nfixed",
+        end_point=None,
+        start_point=None,
         **kwargs,
     ):
-        self.n_stops = n_stops
-        self.action_space = self.n_stops
-        self.observation_space = self.n_stops
         self.xy = xy
-        self.max_box = max_box
-        self.stops = []
-        self.fixed = fixed
         self.boundary_index = boundary_index
-        self.grid_size = grid_size  # number of blocks per side
-        self.block_size = block_size  # size of each block
+        self.n_stops = n_stops
+        self.max_box = max_box
+        self.fixed = fixed
+        self.grid_size = grid_size
+        self.block_size = block_size
+        self.end_point = end_point
+        self.start_point = start_point
+        logger.info(f"End point set to: {self.end_point}")
+
+        # Define the four cardinal directions: up, down, left, right
+        self.directions = [
+            (0, -1),  # Up (decrease y)
+            (0, 1),  # Down (increase y)
+            (-1, 0),  # Left (decrease x)
+            (1, 0),  # Right (increase x)
+        ]
 
         # Create grid structure
         self._generate_grid()
         self._generate_stops()
         self._generate_q_values()
+
+        # Initialize reward model with information about goal
+        self.reward_model = RewardModel(self.grid, self.xy, self.max_box)
+
+        # Set goal state in reward model if end point is specified
+        if self.end_point:
+            # Find closest stop to the goal point
+            goal_distances = np.sqrt(
+                (self.xy[:, 0] - self.end_point[0]) ** 2
+                + (self.xy[:, 1] - self.end_point[1]) ** 2
+            )
+            self.goal_stop = np.argmin(goal_distances)
+            self.reward_model.goal_state = self.goal_stop
+            logger.info(f"Goal stop set to stop #{self.goal_stop}")
+        else:
+            self.goal_stop = None
+
         self.render()
         self.reset()
 
@@ -125,7 +161,11 @@ class Delivery:
         ax.grid(True)
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.legend()
+        # wrap legend in try/except
+        try:
+            ax.legend()
+        except Exception:
+            pass
 
         if return_img:
             fig.canvas.draw()
@@ -135,21 +175,102 @@ class Delivery:
             return image
 
     def reset(self):
+        """Reset environment and start agent at specified start point or bottom-left"""
         self.stops = []
-        if self.fixed:
-            k = self.boundary_index
-            first_stop = k[0]
-        else:
-            first_stop = random.randint(0, self.n_stops - 1)
-        self.stops.append(first_stop)
-        return first_stop
 
-    def step(self, destination):
+        # Get grid dimensions
+        grid_height, grid_width = self.grid.shape
+
+        if self.start_point:
+            # Use provided start point
+            start_x, start_y = self.start_point
+        else:
+            # Default to bottom-left
+            start_x = 0
+            start_y = grid_height - 1
+
+        # Make sure we're on a street (value 0)
+        # If start point is not on a street, find closest street cell
+        if 0 <= start_y < grid_height and 0 <= start_x < grid_width:
+            if self.grid[int(start_y), int(start_x)] != 0:
+                # Find nearest valid street cell
+                valid_coords = np.argwhere(self.grid == 0)
+                dists = np.sqrt(
+                    (valid_coords[:, 0] - start_y) ** 2
+                    + (valid_coords[:, 1] - start_x) ** 2
+                )
+                closest_idx = np.argmin(dists)
+                start_y, start_x = valid_coords[closest_idx]
+        else:
+            # If start point is off grid, default to bottom-left
+            start_x = 0
+            start_y = grid_height - 1
+            while start_x < grid_width and self.grid[start_y, start_x] != 0:
+                start_x += 1
+
+        # Set initial position and find closest stop
+        self.current_pos = np.array([start_x, start_y])
+
+        # Find closest stop to this position
+        start_distances = np.sqrt(
+            (self.xy[:, 0] - start_x) ** 2 + (self.xy[:, 1] - start_y) ** 2
+        )
+        start_stop = np.argmin(start_distances)
+
+        # Set initial stop
+        self.stops = [start_stop]
+
+        return start_stop
+
+    def step(self, action):
+        """Take a step in the environment using directional movement"""
         state = self._get_state()
-        new_state = destination
-        reward = self._get_reward(state, new_state)
-        self.stops.append(destination)
-        return new_state, reward
+        invalid_moves = 0
+
+        # Get current position
+        current_x, current_y = self.current_pos
+
+        # Apply movement in the selected direction (up, down, left, right)
+        dx, dy = self.directions[action]
+        new_x = current_x + dx
+        new_y = current_y + dy
+
+        # Ensure we stay within grid boundaries
+        if (
+            new_x < 0
+            or new_x >= self.grid.shape[1]
+            or new_y < 0
+            or new_y >= self.grid.shape[0]
+        ):
+            # Out of bounds - return current state with penalty
+            invalid_moves += 1
+            reward = self.reward_model.building_penalty
+            return state, float(reward)
+
+        # Check if we hit a building (value 1 in grid)
+        if self.grid[int(new_y), int(new_x)] == 1:
+            # We hit a building - return current state with penalty
+            invalid_moves += 1
+            reward = self.reward_model.building_penalty
+            return state, float(reward)
+
+        # Update position to new valid position
+        self.current_pos = np.array([new_x, new_y])
+
+        # Find the nearest stop to the new position
+        distances = np.sqrt((self.xy[:, 0] - new_x) ** 2 + (self.xy[:, 1] - new_y) ** 2)
+        new_state = np.argmin(distances)
+
+        # Calculate reward
+        reward = self.reward_model.calculate_reward(
+            state, new_state, self.stops, self.xy
+        )
+
+        # Only record the stop if it's a new one
+        if new_state not in self.stops:
+            self.stops.append(new_state)
+
+        return new_state, float(reward)
 
     def _get_state(self):
         return self.stops[-1]
@@ -161,77 +282,11 @@ class Delivery:
         return x, y
 
     def _get_reward(self, state, new_state):
-        """Calculate reward for the transition from state to new_state"""
-        # Get coordinates of current and next state
-        current_pos = np.array([self.x[state], self.y[state]])
-        next_pos = np.array([self.x[new_state], self.y[new_state]])
-
-        # Base reward components
-        completion_reward = 0
-        distance_penalty = 0
-        obstacle_penalty = 0
-        revisit_penalty = 0
-
-        # Check if path intersects with buildings
-        num_samples = 20
-        t = np.linspace(0, 1, num_samples)
-        path_points = np.array(
-            [
-                current_pos[0] + t * (next_pos[0] - current_pos[0]),
-                current_pos[1] + t * (next_pos[1] - current_pos[1]),
-            ]
-        ).T
-
-        # Convert to grid coordinates
-        path_coords = path_points.astype(int)
-
-        # Check for building collisions
-        for point in path_coords:
-            if (
-                point[0] < 0
-                or point[1] < 0
-                or point[0] >= self.grid.shape[0]
-                or point[1] >= self.grid.shape[1]
-            ):
-                return torch.tensor(-1000.0)  # Immediate failure for out of bounds
-
-            if self.grid[point[0], point[1]] == 1:
-                obstacle_penalty = -1000.0  # Penalty for hitting building
-
-        # Calculate distance penalty (normalized)
-        distance = np.linalg.norm(next_pos - current_pos)
-        max_possible_distance = np.sqrt(2) * self.max_box
-        distance_penalty = -100 * (distance / max_possible_distance)
-
-        # Penalty for revisiting states
-        if new_state in self.stops:
-            revisit_penalty = -500.0
-
-        # Reward for completing the route
-        if len(self.stops) == self.n_stops - 1:  # About to visit last stop
-            completion_reward = 1000.0
-
-        # Additional reward for efficient paths
-        if len(self.stops) > 1:
-            prev_pos = np.array([self.x[self.stops[-2]], self.y[self.stops[-2]]])
-            angle = np.abs(
-                np.arctan2(next_pos[1] - current_pos[1], next_pos[0] - current_pos[0])
-                - np.arctan2(current_pos[1] - prev_pos[1], current_pos[0] - prev_pos[0])
-            )
-            angle_penalty = -50 * (angle / np.pi)  # Penalize sharp turns
-        else:
-            angle_penalty = 0
-
-        # Combine all rewards
-        total_reward = (
-            completion_reward
-            + distance_penalty
-            + obstacle_penalty
-            + revisit_penalty
-            + angle_penalty
+        """Get reward for transition from state to new_state"""
+        reward = self.reward_model.calculate_reward(
+            state, new_state, self.stops, self.xy
         )
-
-        return torch.tensor(total_reward, dtype=torch.float32)
+        return reward  # The RewardModel will handle returning a CPU tensor
 
 
 if __name__ == "__main__":

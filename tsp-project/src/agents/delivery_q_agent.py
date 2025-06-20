@@ -1,8 +1,10 @@
+import seaborn as sns
 import torch
 import numpy as np
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
+import random
 
 
 class DeliveryQAgent:
@@ -22,18 +24,28 @@ class DeliveryQAgent:
         actions_size,
         alpha=1,
         beta=1,
-        gamma=0.9,
-        lr=0.6,
+        gamma=0.95,  # Increased from 0.9
+        lr=0.3,  # Reduced from 0.6
     ):
         self.xy = xy
         self.method = method
         self.gamma = gamma
         self.lr = lr
         self.epsilon = 0.1  # exploration rate
+        self.grid_size = max_box
 
-        # Initialize Q-values
+        # Define the four cardinal directions: up, down, left, right
+        self.directions = [
+            (0, -1),  # Up (decrease y)
+            (0, 1),  # Down (increase y)
+            (-1, 0),  # Left (decrease x)
+            (1, 0),  # Right (increase x)
+        ]
+        self.direction_names = ["Up", "Down", "Left", "Right"]
+
+        # Initialize Q-values for states and cardinal directions
         self.Q, self.visits, self.update, self.rewards = self.build_model(
-            states_size, actions_size
+            states_size, len(self.directions)
         )
 
         # Move Q-matrix to GPU if available
@@ -51,35 +63,65 @@ class DeliveryQAgent:
         self.best_route = None
         self.best_distance = float("inf")
 
+        # Experience replay buffer
+        self.replay_buffer = []
+        self.replay_buffer_size = 1000
+        self.batch_size = 32
+
     def build_model(self, states_size, actions_size):
-        Q = cdist(self.xy, self.xy)
+        # Instead of state-to-state Q-values, build state-to-action Q-values
+        Q = np.random.uniform(0, 0.1, (states_size, actions_size))
         visits = {}
         update = {}
         rewards = {}
         for i in range(states_size):
-            Q[i, i] = -np.inf
-            for j in range(states_size):
+            for j in range(actions_size):
                 visits[(i, j)] = 0
                 update[(i, j)] = 0
                 rewards[(i, j)] = 0
         return Q, visits, update, rewards
 
     def act(self, state):
+        """Select an action (direction) based on Q-values and epsilon-greedy policy"""
         if np.random.random() < self.epsilon:
-            return np.random.randint(self.Q.size(0))
+            # Pure random exploration of directions
+            return np.random.randint(len(self.directions))
         else:
             with torch.no_grad():
-                return torch.argmax(self.Q[state]).item()
+                # Get Q-values for current state and all directions
+                q_values = self.Q[state].cpu().numpy()
 
-    def train(self, state, new_state, reward):
+                # Apply numerical stability fixes for softmax
+                temperature = max(0.1, self.epsilon * 2)
+                q_shifted = q_values - np.max(q_values)
+                probs = np.exp(np.clip(q_shifted / temperature, -20, 20))
+                sum_probs = np.sum(probs)
+
+                if sum_probs <= 0 or np.isnan(sum_probs):
+                    return np.random.randint(len(self.directions))
+
+                probs = probs / sum_probs
+
+                # Choose based on probability distribution
+                if np.random.random() < 0.8:
+                    return np.random.choice(len(self.directions), p=probs)
+                else:
+                    return np.argmax(q_values)
+
+    def train(self, state, action, reward):
+        """Train the Q-agent using the Q-learning update rule"""
         if self.method == "cluster":
             with torch.no_grad():
-                old_value = self.Q[state, new_state]
-                next_max = torch.max(self.Q[new_state])
+                # Get old value
+                old_value = self.Q[state, action]
+                # Calculate next max value
+                next_max = torch.max(self.Q[state])
+                # Calculate new value
                 new_value = (1 - self.lr) * old_value + self.lr * (
                     reward + self.gamma * next_max
                 )
-                self.Q[state, new_state] = new_value
+                # Update Q-table
+                self.Q[state, action] = new_value
 
                 # Track loss
                 loss = (new_value - old_value).pow(2)
@@ -93,6 +135,37 @@ class DeliveryQAgent:
 
     def remember_state(self, s):
         self.states_memory.append(s)
+
+    def visualize_q_table(self, filepath=None):
+        """
+        Visualize the Q-table as a heatmap using seaborn
+
+        Args:
+            filepath (str, optional): Path to save the visualization. If None, only displays.
+        """
+        plt.figure(figsize=(10, 8))
+
+        # Convert Q-table to CPU numpy array for visualization
+        q_values = self.Q.cpu().numpy()
+
+        # Create a mask for -inf values
+        mask = np.isinf(q_values)
+
+        # Create heatmap
+        ax = sns.heatmap(
+            q_values,
+            cmap="viridis",
+            mask=mask,
+            annot=True,
+            fmt=".2f",
+            linewidths=0.5,
+            cbar_kws={"label": "Q-value"},
+            vmin=q_values[~mask].min(),
+            vmax=q_values[~mask].max(),
+        )
+
+        # Enhance visualization
+        plt.title("Q-table Heatmap")
 
 
 if __name__ == "__main__":

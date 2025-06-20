@@ -3,7 +3,7 @@
 *.pyc
 # Ignore png files
 *.png
-
+*.mov
 # Ignore strange files 
 *.0
 *.1
