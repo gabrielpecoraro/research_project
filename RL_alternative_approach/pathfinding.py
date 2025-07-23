@@ -4,6 +4,14 @@ import heapq
 import matplotlib.animation as animation
 import random
 
+# Add these imports for Bezier curves
+from scipy.interpolate import splprep, splev
+
+#### REFERENCES FOR ARTICLE ####
+
+# https://arxiv.org/pdf/2205.07772
+# https://arxiv.org/abs/1705.08926
+
 
 class Environment:
     def __init__(self, width, height, block_size=1.0):
@@ -482,18 +490,109 @@ class VehicleTarget:
                 self.direction = (rot_x, rot_y)
                 self.last_strategy = f"turning_{angle_offset}"
                 return
-        """
-        # If all else fails, try reversing direction
-        reverse_x = -new_dir_x * self.speed * 0.5  # Move slower when reversing
-        reverse_y = -new_dir_y * self.speed * 0.5
 
-        test_x = self.position[0] + reverse_x
-        test_y = self.position[1] + reverse_y
 
-        if self.env.is_valid_position(test_x, test_y):
-            self.position = (test_x, test_y)
-            self.direction = (-new_dir_x, -new_dir_y)
-            self.last_strategy = "reversing"""
+def smooth_path_with_bezier(path, smoothing_factor=0.05, num_points=None):
+    """
+    Optimized smooth path generation with fewer points for better performance
+
+    Parameters:
+    - path: List of (x, y) tuples representing the original path
+    - smoothing_factor: How much to smooth (reduced default for performance)
+    - num_points: Number of points in the smoothed path (auto-calculated if None)
+
+    Returns:
+    - List of (x, y) tuples representing the smoothed path
+    """
+    if len(path) < 3:
+        return path
+
+    # Auto-calculate fewer points for better performance
+    if num_points is None:
+        num_points = min(50, len(path) * 2)  # Much fewer points
+
+    # Convert path to arrays
+    path_array = np.array(path)
+    x = path_array[:, 0]
+    y = path_array[:, 1]
+
+    try:
+        # Create parametric representation with reduced smoothing
+        tck, u = splprep([x, y], s=smoothing_factor, per=False)
+
+        # Generate smooth curve with fewer points
+        u_new = np.linspace(0, 1, num_points)
+        x_smooth, y_smooth = splev(u_new, tck)
+
+        # Convert back to list of tuples
+        smooth_path = list(zip(x_smooth, y_smooth))
+
+        return smooth_path
+    except:
+        # If spline fails, fall back to original path
+        return path
+
+
+def interpolate_agent_position(path, progress, use_smooth=True, env=None):
+    """
+    Optimized agent position interpolation with performance improvements
+    """
+    if not path or len(path) == 0:
+        return (0, 0)
+
+    if len(path) == 1:
+        return path[0]
+
+    if use_smooth and len(path) >= 3:
+        # Generate smooth path with reduced points
+        smooth_path = smooth_path_with_bezier(
+            path, smoothing_factor=0.05, num_points=min(30, len(path) * 2)
+        )
+
+        # Quick safety check - only validate every few points for performance
+        if env is not None:
+            safe_smooth_path = []
+            check_interval = max(1, len(smooth_path) // 10)  # Check every 10th point
+
+            for i, point in enumerate(smooth_path):
+                if i % check_interval == 0:  # Only check some points
+                    if not env.is_valid_position(point[0], point[1]):
+                        break
+                safe_smooth_path.append(point)
+
+            if len(safe_smooth_path) < 3:
+                return interpolate_agent_position(path, progress, False, env)
+
+            smooth_path = safe_smooth_path
+
+        # Find position along smooth path
+        smooth_index = progress * (len(smooth_path) - 1)
+        lower_idx = int(smooth_index)
+        upper_idx = min(lower_idx + 1, len(smooth_path) - 1)
+
+        if lower_idx == upper_idx:
+            return smooth_path[lower_idx]
+
+        # Linear interpolation between smooth points
+        t = smooth_index - lower_idx
+        x = smooth_path[lower_idx][0] * (1 - t) + smooth_path[upper_idx][0] * t
+        y = smooth_path[lower_idx][1] * (1 - t) + smooth_path[upper_idx][1] * t
+
+        return (x, y)
+    else:
+        # Original discrete interpolation
+        index = progress * (len(path) - 1)
+        lower_idx = int(index)
+        upper_idx = min(lower_idx + 1, len(path) - 1)
+
+        if lower_idx == upper_idx:
+            return path[lower_idx]
+
+        t = index - lower_idx
+        x = path[lower_idx][0] * (1 - t) + path[upper_idx][0] * t
+        y = path[lower_idx][1] * (1 - t) + path[upper_idx][1] * t
+
+        return (x, y)
 
 
 def animate_multi_agent_pursuit(
@@ -504,70 +603,60 @@ def animate_multi_agent_pursuit(
     max_frames=500,
     agent1_delay=30,
     agent2_delay=100,
-    target_speed=0.5,
-    agent1_speed=0.4,
-    agent2_speed=0.7,
+    target_speed=1.2,  # Much faster
+    agent1_speed=0.8,  # Fast but slower than target
+    agent2_speed=2.0,  # Much faster than both
+    use_smooth_trajectories=True,
 ):
     """
-    Animate two agents pursuing a fleeing target
-
-    Parameters:
-    - env: The environment with obstacles
-    - pathfinder: The A* pathfinding algorithm
-    - start: Starting position for both agents
-    - target_position: Initial position for target
-    - max_frames: Maximum animation frames
-    - agent1_delay: Frames to wait before agent 1 starts pursuit (3s = 30 frames)
-    - agent2_delay: Frames to wait before deploying agent 2 (10s = 100 frames)
-    - target_speed: Movement speed for target
-    - agent1_speed: Movement speed for agent 1
-    - agent2_speed: Movement speed for agent 2
+    Multi-agent pursuit with CONSTANT speeds throughout execution
     """
-    # If no target position is provided, use top right corner
     if target_position is None:
         target_position = (env.width - 0.5, env.height - 0.5)
 
-    # Validate that target position is valid
     if not env.is_valid_position(target_position[0], target_position[1]):
         raise ValueError("Target position must be on a street, not inside a building")
 
     fig, ax = plt.subplots(figsize=(10, 10))
 
-    # Set up environment visualization
     for ox, oy, ow, oh in env.obstacles:
         rect = plt.Rectangle((ox, oy), ow, oh, color="gray")
         ax.add_patch(rect)
 
-    # Initialize target and agents
     target = VehicleTarget(env, target_position, speed=target_speed, inertia=0.8)
-
-    # Store target's position history for predictions
     target_history = []
 
-    # First agent starts at position but doesn't move yet
     agent1_pos = start
     agent1_path = pathfinder.find_path(agent1_pos, target.position)
 
-    # For speed adjustment, we'll modify how often we move along the path
-    agent1_move_frequency = max(
-        1, int(10 / agent1_speed)
-    )  # Lower number = faster movement
-    agent2_move_frequency = max(1, int(10 / agent2_speed))
+    # CONSTANT SPEED VARIABLES - No variable step sizes
+    agent1_path_progress = 0.0
+    agent2_path_progress = 0.0
+    agent1_smooth_path = []
+    agent2_smooth_path = []
 
-    # Second agent (interceptor) waits until deployed
+    # Generate initial smooth path with fewer points
+    if use_smooth_trajectories and agent1_path and len(agent1_path) >= 3:
+        agent1_smooth_path = smooth_path_with_bezier(agent1_path)
+
+    # CONSTANT MOVEMENT FREQUENCY - Every frame, agents move at their specified speed
+    # No more variable frequencies - agents move every frame with their actual speed
+    agent1_move_every_frame = True
+    agent2_move_every_frame = True
+
     agent2_pos = None
     agent2_path = None
 
     # Create plot elements
-    (agent1_point,) = ax.plot([], [], "ro", markersize=8)  # Red circle for first agent
-    (agent2_point,) = ax.plot(
-        [], [], "mo", markersize=8
-    )  # Magenta circle for second agent
-    (target_point,) = ax.plot([], [], "bs", markersize=8)  # Blue square for target
-    (path1_line,) = ax.plot([], [], "r-", alpha=0.4)  # Path line for first agent
-    (path2_line,) = ax.plot([], [], "m-", alpha=0.4)  # Path line for second agent
-    (predicted_path,) = ax.plot([], [], "g--", alpha=0.6)  # Predicted target path
-    (target_trail,) = ax.plot([], [], "b:", alpha=0.4)  # Target's movement trail
+    (agent1_point,) = ax.plot([], [], "ro", markersize=8)
+    (agent2_point,) = ax.plot([], [], "mo", markersize=8)
+    (target_point,) = ax.plot([], [], "bs", markersize=8)
+    (path1_line,) = ax.plot([], [], "r-", alpha=0.4)
+    (path2_line,) = ax.plot([], [], "m-", alpha=0.4)
+    (smooth_path1_line,) = ax.plot([], [], "r-", alpha=0.8, linewidth=2)
+    (smooth_path2_line,) = ax.plot([], [], "m-", alpha=0.8, linewidth=2)
+    (predicted_path,) = ax.plot([], [], "g--", alpha=0.6)
+    (target_trail,) = ax.plot([], [], "b:", alpha=0.4)
 
     # Text elements
     strategy_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, color="black")
@@ -576,8 +665,6 @@ def animate_multi_agent_pursuit(
     agent2_status = ax.text(0.02, 0.86, "", transform=ax.transAxes, color="magenta")
     time_text = ax.text(0.02, 0.82, "", transform=ax.transAxes, color="blue")
     speed_text = ax.text(0.02, 0.78, "", transform=ax.transAxes, color="green")
-
-    # Add a new text element for capture status
     capture_text = ax.text(
         0.5,
         0.5,
@@ -591,19 +678,23 @@ def animate_multi_agent_pursuit(
         fontweight="bold",
     )
 
-    # Flag to track if target has been captured
     target_captured = False
-
-    # Parameters for capture detection
-    capture_distance = 2.5  # How close agents need to be to capture target
-    min_angle_diff = 90  # Minimum angle difference between agents to consider target cornered (degrees)
+    capture_distance = 2.5
 
     def is_target_captured():
-        """Check if target is effectively captured by both agents"""
+        """
+        Check if target is captured under two specific conditions:
+        1. Target is trapped between an agent and a building (deadlocked street)
+        2. Both agents are within very close proximity (radius 0.8) of the target
+
+        EXTREMELY STRICT CONDITIONS - target must have absolutely NO escape routes
+        """
+        # CRITICAL: Only check capture if BOTH agents are actually deployed and active
         if not interceptor_deployed or agent2_pos is None:
+            info_text.set_text("Agent 2 not deployed yet - no capture possible")
             return False
 
-        # Check if both agents are close enough to the target
+        # Calculate distances from both agents to target using ACTUAL positions
         dist1 = np.sqrt(
             (agent1_pos[0] - target.position[0]) ** 2
             + (agent1_pos[1] - target.position[1]) ** 2
@@ -613,236 +704,219 @@ def animate_multi_agent_pursuit(
             + (agent2_pos[1] - target.position[1]) ** 2
         )
 
-        if dist1 > capture_distance or dist2 > capture_distance:
-            return False  # At least one agent is too far away
+        # CONDITION 2: Both agents are within VERY close vicinity (radius 0.8) - EXTREMELY STRICT
+        proximity_radius = 1.85  # Reduced from 1.0 to be even more strict
+        if dist1 <= proximity_radius and dist2 <= proximity_radius:
+            # Even if both agents are very close, target must have absolutely NO escape routes
+            escape_routes = 0
 
-        # Check if agents are on opposite sides (or at least at a significant angle)
-        angle1 = (
-            np.arctan2(
-                agent1_pos[1] - target.position[1], agent1_pos[0] - target.position[0]
+            # Test ALL 32 directions thoroughly with very strict criteria
+            for i in range(32):
+                angle = i * (2 * np.pi / 32)
+                dx = np.cos(angle)
+                dy = np.sin(angle)
+
+                # Target must not be able to escape even 2.0 units away (increased from 1.5)
+                escape_distance = 1.5
+
+                # Check if this direction is completely blocked
+                path_blocked = False
+                for step in range(
+                    1, 8
+                ):  # Check 7 points along the path (more thorough)
+                    test_dist = escape_distance * step / 7
+                    test_x = target.position[0] + dx * test_dist
+                    test_y = target.position[1] + dy * test_dist
+
+                    if not env.is_valid_position(test_x, test_y):
+                        path_blocked = True
+                        break
+
+                if not path_blocked:
+                    # This direction is clear - check if it leads away from BOTH agents
+                    final_x = target.position[0] + dx * escape_distance
+                    final_y = target.position[1] + dy * escape_distance
+
+                    dist_to_agent1 = np.sqrt(
+                        (final_x - agent1_pos[0]) ** 2 + (final_y - agent1_pos[1]) ** 2
+                    )
+                    dist_to_agent2 = np.sqrt(
+                        (final_x - agent2_pos[0]) ** 2 + (final_y - agent2_pos[1]) ** 2
+                    )
+
+                    # Escape is valid only if it leads MUCH further from BOTH agents (increased threshold)
+                    if dist_to_agent1 > dist1 * 1.8 and dist_to_agent2 > dist2 * 1.8:
+                        escape_routes += 1
+
+            # Only capture if absolutely NO escape routes exist
+            if escape_routes == 0:
+                info_text.set_text(
+                    f"CAPTURED! Both agents very close and no escape routes"
+                )
+                return True
+            else:
+                info_text.set_text(
+                    f"Both agents close (d1:{dist1:.1f}, d2:{dist2:.1f}) but {escape_routes} escape routes available"
+                )
+                return False
+        else:
+            # At least one agent is not close enough for proximity capture
+            info_text.set_text(
+                f"Proximity capture failed - Agent distances: {dist1:.1f}, {dist2:.1f} (need both ≤{proximity_radius})"
             )
-            * 180
-            / np.pi
-        )
-        angle2 = (
-            np.arctan2(
-                agent2_pos[1] - target.position[1], agent2_pos[0] - target.position[0]
+
+        # CONDITION 1: Target trapped between agent and building - EXTREMELY STRICT
+        # Check if any single agent has the target truly cornered
+        min_agent_dist = min(dist1, dist2)
+        closest_agent_name = "Agent 1" if dist1 < dist2 else "Agent 2"
+
+        # At least one agent must be VERY close (within 0.8 units) to create a trap
+        if min_agent_dist > 0.8:  # Reduced from 1.2 to be much more strict
+            info_text.set_text(
+                f"No agents close enough to trap - closest: {closest_agent_name} at {min_agent_dist:.1f} (need ≤0.8)"
             )
-            * 180
-            / np.pi
-        )
+            return False
 
-        angle_diff = abs((angle1 - angle2 + 180) % 360 - 180)
-
-        # Check if target is near an obstacle that limits escape options
-        obstacle_nearby = False
-        for ox, oy, ow, oh in env.obstacles:
-            # Calculate minimum distance to obstacle edges
-            dx = max(ox - target.position[0], 0, target.position[0] - (ox + ow))
-            dy = max(oy - target.position[1], 0, target.position[1] - (oy + oh))
-            dist_to_obstacle = np.sqrt(dx * dx + dy * dy)
-
-            if dist_to_obstacle < 2.0:  # Target is near an obstacle
-                obstacle_nearby = True
-                break
-
-        # Check for available escape routes
+        # Count COMPLETELY blocked directions and valid escape routes
+        blocked_directions = 0
         escape_routes = 0
-        for angle in range(0, 360, 45):  # Check 8 directions
-            rad = angle * np.pi / 180
-            test_x = target.position[0] + np.cos(rad) * 1.5
-            test_y = target.position[1] + np.sin(rad) * 1.5
 
-            if env.is_valid_position(test_x, test_y):
-                # Calculate distance from this point to both agents
-                d1 = np.sqrt(
-                    (test_x - agent1_pos[0]) ** 2 + (test_y - agent1_pos[1]) ** 2
+        # Test 32 directions for maximum precision
+        for i in range(32):
+            angle = i * (2 * np.pi / 32)
+            dx = np.cos(angle)
+            dy = np.sin(angle)
+
+            # Check if this direction is blocked by buildings
+            escape_distance = 3.0  # Increased from 2.5 - target must be able to get even further to "escape"
+            direction_blocked = False
+
+            # Check the entire path for obstacles - more thorough checking
+            for step in range(
+                1, 15
+            ):  # Check 14 points along the path (increased from 10)
+                test_dist = escape_distance * step / 14
+                test_x = target.position[0] + dx * test_dist
+                test_y = target.position[1] + dy * test_dist
+
+                if not env.is_valid_position(test_x, test_y):
+                    direction_blocked = True
+                    blocked_directions += 1
+                    break
+
+            if not direction_blocked:
+                # This direction is clear - check if it's a valid escape
+                final_x = target.position[0] + dx * escape_distance
+                final_y = target.position[1] + dy * escape_distance
+
+                # Calculate distances to BOTH agents from escape point
+                escape_to_agent1 = np.sqrt(
+                    (final_x - agent1_pos[0]) ** 2 + (final_y - agent1_pos[1]) ** 2
                 )
-                d2 = np.sqrt(
-                    (test_x - agent2_pos[0]) ** 2 + (test_y - agent2_pos[1]) ** 2
+                escape_to_agent2 = np.sqrt(
+                    (final_x - agent2_pos[0]) ** 2 + (final_y - agent2_pos[1]) ** 2
                 )
 
-                if d1 > 1.0 and d2 > 1.0:  # If point is not too close to either agent
+                # Valid escape only if it leads significantly away from CLOSEST agent
+                closest_agent_dist = min(dist1, dist2)
+                min_escape_dist = min(escape_to_agent1, escape_to_agent2)
+
+                # Must lead at least 100% further away from closest agent (doubled from 50%)
+                if min_escape_dist > closest_agent_dist * 2.0:
                     escape_routes += 1
 
-        # Target is captured if:
-        # 1. Both agents are close AND
-        # 2. Either: Agents are at a significant angle from each other OR
-        #    Target is near an obstacle AND has few escape routes
-        return (angle_diff > min_angle_diff) or (obstacle_nearby and escape_routes <= 3)
+        # EXTREMELY STRICT CAPTURE CONDITIONS:
+        # 1. At least one agent within 0.8 units AND
+        # 2. Target has exactly 0 escape routes AND
+        # 3. At least 90% of directions are blocked by buildings (increased from 85%)
 
-    # Set plot limits and styling
-    ax.set_xlim(0, env.width)
-    ax.set_ylim(0, env.height)
-    ax.grid(True)
-    ax.set_title("Multi-Agent Pursuit with Vehicle Target")
+        min_blocked_threshold = int(
+            32 * 0.9
+        )  # 90% of directions must be blocked (29+ out of 32)
 
-    # For tracking simulation state
-    frame_count = 0
-    agent1_active = False
-    pursuit_active = False  # True when target starts fleeing
-    interceptor_deployed = False
-    agent1_path_index = 0
-    agent2_path_index = 0
-    update_frequency = 5  # How often to recalculate paths
+        if escape_routes == 0 and blocked_directions >= min_blocked_threshold:
+            info_text.set_text(
+                f"TRULY TRAPPED! {closest_agent_name} cornered target. "
+                f"Distance: {min_agent_dist:.1f}, Escapes: {escape_routes}, "
+                f"Blocked: {blocked_directions}/32"
+            )
+            return True
 
-    # Pattern learning parameters
-    prediction_length = 30  # How many steps to predict ahead
-    history_length = 15  # How many historical positions to use
-    pattern_confidence = 0  # Confidence in pattern prediction (0-100)
+        # Target is NOT captured - provide detailed feedback showing ACTUAL agent positions
+        info_text.set_text(
+            f"NOT TRAPPED - Agent 1: {dist1:.1f}, Agent 2: {dist2:.1f}, "
+            f"Escape routes: {escape_routes}, Blocked: {blocked_directions}/32"
+        )
 
-    def learn_movement_pattern(history, min_length=10):
-        """Learn and analyze target's movement patterns"""
+        return False
+
+    # SIMPLIFIED PATTERN LEARNING FOR PERFORMANCE
+    def learn_movement_pattern(history, min_length=5):
+        """Simplified pattern learning for better performance"""
         nonlocal pattern_confidence
 
         if len(history) < min_length:
             pattern_confidence = 0
             return None
 
-        # Calculate consistency in movement direction
+        recent = history[-min(10, len(history)) :]
         directions = []
-        for i in range(1, len(history)):
-            dx = history[i][0] - history[i - 1][0]
-            dy = history[i][1] - history[i - 1][1]
 
-            if abs(dx) < 0.01 and abs(dy) < 0.01:  # Skip if barely moved
+        for i in range(1, len(recent)):
+            dx = recent[i][0] - recent[i - 1][0]
+            dy = recent[i][1] - recent[i - 1][1]
+
+            if abs(dx) < 0.01 and abs(dy) < 0.01:
                 continue
 
             angle = np.arctan2(dy, dx) * 180 / np.pi
             directions.append(angle)
 
-        if len(directions) < 5:
-            pattern_confidence = 0
+        if len(directions) < 3:
+            pattern_confidence = 30
             return None
 
-        # Calculate standard deviation of direction changes
         direction_changes = []
         for i in range(1, len(directions)):
-            change = (directions[i] - directions[i - 1] + 180) % 360 - 180
-            direction_changes.append(abs(change))
+            change = abs((directions[i] - directions[i - 1] + 180) % 360 - 180)
+            direction_changes.append(change)
 
-        if not direction_changes:
-            pattern_confidence = 0
-            return None
-
-        std_dev = np.std(direction_changes)
-
-        # High std_dev = erratic movement, low std_dev = consistent movement
-        consistency = max(0, 100 - std_dev * 2)
-
-        # Look for repeated patterns in direction changes
-        pattern_detected = False
-        pattern_length = 0
-
-        # Simple pattern detection - look for repeating sequences of direction
-        if len(directions) >= 8:
-            for seq_len in range(2, 5):  # Look for patterns of length 2-4
-                for i in range(len(directions) - 2 * seq_len):
-                    seq1 = directions[i : i + seq_len]
-                    seq2 = directions[i + seq_len : i + 2 * seq_len]
-
-                    # Check similarity between sequences
-                    similarity = (
-                        sum(abs(seq1[j] - seq2[j]) < 20 for j in range(seq_len))
-                        / seq_len
-                    )
-
-                    if similarity > 0.7:  # 70% similar
-                        pattern_detected = True
-                        pattern_length = seq_len
-                        break
-
-                if pattern_detected:
-                    break
-
-        # Calculate overall confidence in our prediction
-        if pattern_detected:
-            pattern_confidence = int(
-                min(100, consistency + 20)
-            )  # Bonus for detected pattern
+        if direction_changes:
+            avg_change = np.mean(direction_changes)
+            pattern_confidence = max(30, min(90, 100 - avg_change * 2))
         else:
-            pattern_confidence = int(
-                min(100, consistency * 0.7)
-            )  # Penalty for no pattern
+            pattern_confidence = 30
 
-        # Return dominant direction and expected next moves
-        if len(directions) >= 3:
-            recent_dirs = directions[-3:]
-            avg_direction = sum(recent_dirs) / len(recent_dirs)
-            return avg_direction
+        if len(directions) >= 2:
+            return np.mean(directions[-2:])
 
         return None
 
     def predict_vehicle_path(history):
-        """Predict path for a vehicle-like target with inertia"""
-        if len(history) < 5:
+        """Simplified prediction for better performance"""
+        if len(history) < 3:
             return [target.position]
 
-        # For vehicle target, analyze recent trajectory and extrapolate
-        # with consideration for inertia and obstacles
+        recent = history[-min(5, len(history)) :]
 
-        # First, learn patterns
-        movement_angle = learn_movement_pattern(history)
-
-        # Calculate recent velocity vector
-        recent = history[-min(len(history), 5) :]
-        dx_sum, dy_sum = 0, 0
-
-        for i in range(1, len(recent)):
-            dx_sum += recent[i][0] - recent[i - 1][0]
-            dy_sum += recent[i][1] - recent[i - 1][1]
-
-        if len(recent) <= 1:
+        if len(recent) < 2:
             return [target.position]
 
-        avg_dx = dx_sum / (len(recent) - 1)
-        avg_dy = dy_sum / (len(recent) - 1)
+        dx = recent[-1][0] - recent[-2][0]
+        dy = recent[-1][1] - recent[-2][1]
 
-        # If we have high confidence in pattern, adjust prediction
-        if pattern_confidence > 60 and movement_angle is not None:
-            # Blend actual velocity with predicted pattern
-            blend_ratio = pattern_confidence / 100
-
-            # Convert angle to direction vector
-            pattern_dx = np.cos(movement_angle * np.pi / 180)
-            pattern_dy = np.sin(movement_angle * np.pi / 180)
-
-            # Normalize actual velocity
-            actual_mag = max(0.001, np.sqrt(avg_dx * avg_dx + avg_dy * avg_dy))
-            actual_dx = avg_dx / actual_mag
-            actual_dy = avg_dy / actual_mag
-
-            # Blend vectors
-            dx = actual_dx * (1 - blend_ratio) + pattern_dx * blend_ratio
-            dy = actual_dy * (1 - blend_ratio) + pattern_dy * blend_ratio
-
-            # Normalize and scale by target speed
-            mag = max(0.001, np.sqrt(dx * dx + dy * dy))
-            dx = dx / mag * target.speed
-            dy = dy / mag * target.speed
-        else:
-            # Just use recent velocity
-            dx = avg_dx
-            dy = avg_dy
-
-        # Generate predicted path
         predicted = [target.position]
         current = target.position
 
-        for i in range(prediction_length):
+        for i in range(min(15, prediction_length)):
             next_x = current[0] + dx
             next_y = current[1] + dy
 
-            # Check if valid
             if env.is_valid_position(next_x, next_y):
                 current = (next_x, next_y)
                 predicted.append(current)
             else:
-                # Hit obstacle, try to find alternate path by sampling angles
-                found_valid = False
-
-                # Try at most 8 different angles
-                for angle_offset in [0, 30, -30, 45, -45, 60, -60, 90, -90]:
+                for angle_offset in [30, -30, 60, -60, 90, -90]:
                     angle = np.arctan2(dy, dx) + angle_offset * np.pi / 180
                     test_dx = np.cos(angle) * target.speed
                     test_dy = np.sin(angle) * target.speed
@@ -851,20 +925,13 @@ def animate_multi_agent_pursuit(
                     test_y = current[1] + test_dy
 
                     if env.is_valid_position(test_x, test_y):
-                        current = (test_x, test_dy)
+                        current = (test_x, test_y)
                         predicted.append(current)
-
-                        # Update direction for next iteration
-                        dx = test_dx * 0.9 + dx * 0.1  # Blend with previous direction
-                        dy = test_dy * 0.9 + dy * 0.1
-
-                        found_valid = True
+                        dx, dy = test_dx, test_dy
                         break
+                else:
+                    break
 
-                if not found_valid:
-                    break  # No valid move found
-
-        # Update visualization of predicted path
         if predicted:
             pred_x = [p[0] for p in predicted]
             pred_y = [p[1] for p in predicted]
@@ -873,22 +940,32 @@ def animate_multi_agent_pursuit(
         return predicted
 
     def find_intercept_point(agent_pos, predicted_path):
-        """Find the best interception point for agent 2"""
+        """Simplified interception point calculation"""
         if not predicted_path or len(predicted_path) < 3:
             return target.position
 
-        # Choose interception point based on pattern confidence
-        if pattern_confidence > 70:
-            # Higher confidence = intercept further ahead
-            index = int(min(len(predicted_path) - 1, len(predicted_path) * 0.8))
-        elif pattern_confidence > 40:
-            # Medium confidence = intercept at middle point
-            index = int(min(len(predicted_path) - 1, len(predicted_path) * 0.6))
+        if pattern_confidence > 60:
+            index = min(len(predicted_path) - 1, int(len(predicted_path) * 0.7))
         else:
-            # Low confidence = intercept closer to current position
-            index = int(min(len(predicted_path) - 1, len(predicted_path) * 0.4))
+            index = min(len(predicted_path) - 1, int(len(predicted_path) * 0.5))
 
         return predicted_path[index]
+
+    ax.set_xlim(0, env.width)
+    ax.set_ylim(0, env.height)
+    ax.grid(True)
+    ax.set_title("High-Speed Multi-Agent Pursuit")
+
+    frame_count = 0
+    agent1_active = False
+    pursuit_active = False
+    interceptor_deployed = False
+    agent1_path_index = 0
+    agent2_path_index = 0
+    update_frequency = 3
+
+    prediction_length = 15
+    pattern_confidence = 30
 
     def init():
         agent1_point.set_data([], [])
@@ -896,6 +973,8 @@ def animate_multi_agent_pursuit(
         target_point.set_data([], [])
         path1_line.set_data([], [])
         path2_line.set_data([], [])
+        smooth_path1_line.set_data([], [])
+        smooth_path2_line.set_data([], [])
         predicted_path.set_data([], [])
         target_trail.set_data([], [])
         strategy_text.set_text("")
@@ -912,6 +991,8 @@ def animate_multi_agent_pursuit(
             target_point,
             path1_line,
             path2_line,
+            smooth_path1_line,
+            smooth_path2_line,
             predicted_path,
             target_trail,
             strategy_text,
@@ -924,15 +1005,14 @@ def animate_multi_agent_pursuit(
         )
 
     def update(frame):
-        nonlocal agent1_pos, agent1_path, agent1_path_index
-        nonlocal agent2_pos, agent2_path, agent2_path_index
+        nonlocal agent1_pos, agent1_path, agent1_path_index, agent1_path_progress
+        nonlocal agent2_pos, agent2_path, agent2_path_index, agent2_path_progress
+        nonlocal agent1_smooth_path, agent2_smooth_path
         nonlocal frame_count, agent1_active, pursuit_active, interceptor_deployed
         nonlocal target_history, target_captured
 
-        # Increment frame counter
         frame_count += 1
 
-        # If target is already captured, just show capture message and return
         if target_captured:
             if capture_text.get_alpha() < 1.0:
                 capture_text.set_alpha(min(1.0, capture_text.get_alpha() + 0.05))
@@ -942,6 +1022,8 @@ def animate_multi_agent_pursuit(
                 target_point,
                 path1_line,
                 path2_line,
+                smooth_path1_line,
+                smooth_path2_line,
                 predicted_path,
                 target_trail,
                 strategy_text,
@@ -953,7 +1035,7 @@ def animate_multi_agent_pursuit(
                 capture_text,
             )
 
-        # Update timing displays
+        # Timing displays
         if not agent1_active:
             time_text.set_text(
                 f"Agent 1 starts in: {(agent1_delay - frame_count) / 10:.1f}s"
@@ -963,42 +1045,37 @@ def animate_multi_agent_pursuit(
                 f"Agent 2 deploys in: {(agent1_delay + agent2_delay - frame_count) / 10:.1f}s"
             )
 
-        # Show speed information
         speed_text.set_text(
             f"Speeds - Target: {target_speed}, Agent 1: {agent1_speed}, Agent 2: {agent2_speed}"
         )
 
-        # Add current target position to history
+        # Target history (keep recent only for performance)
         target_history.append(target.position)
-        if len(target_history) > 100:
-            target_history = target_history[-100:]
+        if len(target_history) > 50:
+            target_history = target_history[-50:]
 
-        # Update target trail visualization
+        # Update trail
         if len(target_history) > 1:
-            trail_x = [p[0] for p in target_history]
-            trail_y = [p[1] for p in target_history]
+            trail_x = [p[0] for p in target_history[-20:]]
+            trail_y = [p[1] for p in target_history[-20:]]
             target_trail.set_data(trail_x, trail_y)
 
-        # Update target visualization
         target_point.set_data([target.position[0]], [target.position[1]])
 
-        # Check distance between agent1 and target
         distance_to_target = np.sqrt(
             (agent1_pos[0] - target.position[0]) ** 2
             + (agent1_pos[1] - target.position[1]) ** 2
         )
 
-        # ===== AGENT 1 ACTIVATION AFTER DELAY =====
+        # Agent activation
         if frame_count >= agent1_delay and not agent1_active:
             agent1_active = True
             agent1_status.set_text("Agent 1: Started pursuit")
 
-        # ===== ACTIVATE PURSUIT =====
         if distance_to_target < 1.0 and agent1_active and not pursuit_active:
             pursuit_active = True
             agent1_status.set_text("Agent 1: Target fleeing!")
 
-        # ===== DEPLOY AGENT 2 AFTER DELAY =====
         if (
             pursuit_active
             and frame_count >= (agent1_delay + agent2_delay)
@@ -1008,19 +1085,15 @@ def animate_multi_agent_pursuit(
             agent2_pos = start
             agent2_status.set_text("Agent 2: Deploying...")
 
-            # Predict target's path
             predicted_positions = predict_vehicle_path(target_history)
-
-            # Find interception point
             intercept_point = find_intercept_point(agent2_pos, predicted_positions)
 
-            # Calculate path to interception point
             agent2_path = pathfinder.find_path(agent2_pos, intercept_point)
             agent2_path_index = 0
+            agent2_path_progress = 0.0
 
-        # ===== TARGET MOVEMENT =====
+        # Target movement
         if pursuit_active:
-            # Determine which agent the target should flee from
             if interceptor_deployed and agent2_pos is not None:
                 dist1 = np.sqrt(
                     (agent1_pos[0] - target.position[0]) ** 2
@@ -1037,93 +1110,226 @@ def animate_multi_agent_pursuit(
                 closest_agent_pos = agent1_pos
                 fleeing_from = "Agent 1"
 
-            # Update target position
             target.update_position(closest_agent_pos)
 
-            # Update status text
             strategy_text.set_text(f"Strategy: {target.last_strategy}")
             info_text.set_text(
                 f"Fleeing from: {fleeing_from}, Pattern confidence: {pattern_confidence}%"
             )
 
-            # Periodically predict path and recalculate agent paths
+            # FASTER PATH UPDATES: Update paths more frequently
             if frame_count % update_frequency == 0:
-                # Generate prediction
                 predicted_positions = predict_vehicle_path(target_history)
 
-                # Update agent paths if needed
                 if agent1_active:
-                    agent1_path = pathfinder.find_path(agent1_pos, target.position)
-                    agent1_path_index = 0
+                    new_path = pathfinder.find_path(agent1_pos, target.position)
+                    if new_path and len(new_path) > 2:
+                        agent1_path = new_path
+                        agent1_path_index = 0
+                        agent1_path_progress = 0.0
+                        if use_smooth_trajectories:
+                            agent1_smooth_path = smooth_path_with_bezier(agent1_path)
 
                 if interceptor_deployed and agent2_pos is not None:
-                    if frame_count % (update_frequency * 3) == 0:
+                    if frame_count % (update_frequency * 2) == 0:
                         intercept_point = find_intercept_point(
                             agent2_pos, predicted_positions
                         )
-                        agent2_path = pathfinder.find_path(agent2_pos, intercept_point)
-                        agent2_path_index = 0
+                        new_path = pathfinder.find_path(agent2_pos, intercept_point)
+                        if new_path and len(new_path) > 2:
+                            agent2_path = new_path
+                            agent2_path_index = 0
+                            agent2_path_progress = 0.0
+                            if use_smooth_trajectories:
+                                agent2_smooth_path = smooth_path_with_bezier(
+                                    agent2_path
+                                )
 
-        # ===== AGENT 1 MOVEMENT =====
-        if agent1_active and agent1_path and frame_count % agent1_move_frequency == 0:
-            if agent1_path_index < len(agent1_path):
-                agent1_pos = agent1_path[agent1_path_index]
-                agent1_path_index += 1
-                agent1_status.set_text("Agent 1: Pursuing")
+        # CONSTANT SPEED AGENT 1 MOVEMENT - Move at exact speed every frame
+        if agent1_active and agent1_path:
+            if use_smooth_trajectories and agent1_smooth_path:
+                # CONSTANT PROGRESS STEP based on actual speed
+                # Calculate the exact progress step needed for the specified speed
+                if len(agent1_smooth_path) > 1:
+                    total_path_length = 0
+                    for i in range(1, len(agent1_smooth_path)):
+                        dx = agent1_smooth_path[i][0] - agent1_smooth_path[i - 1][0]
+                        dy = agent1_smooth_path[i][1] - agent1_smooth_path[i - 1][1]
+                        total_path_length += np.sqrt(dx * dx + dy * dy)
+
+                    # Progress step = speed / total_length
+                    progress_step = agent1_speed / max(0.1, total_path_length)
+                else:
+                    progress_step = 0.1
+
+                agent1_path_progress = min(1.0, agent1_path_progress + progress_step)
+                agent1_pos = interpolate_agent_position(
+                    agent1_path, agent1_path_progress, True, env
+                )
+
+                if agent1_path_progress >= 1.0:
+                    new_path = pathfinder.find_path(agent1_pos, target.position)
+                    if new_path:
+                        agent1_path = new_path
+                        agent1_path_progress = 0.0
+                        agent1_smooth_path = smooth_path_with_bezier(agent1_path)
+                    agent1_status.set_text("Agent 1: Recalculating")
+                else:
+                    agent1_status.set_text("Agent 1: Pursuing (constant speed)")
             else:
-                # If we've reached the end of path, recalculate
-                agent1_path = pathfinder.find_path(agent1_pos, target.position)
-                agent1_path_index = 0
-                agent1_status.set_text("Agent 1: Recalculating")
+                # CONSTANT DISCRETE MOVEMENT - calculate step based on speed
+                if agent1_path and len(agent1_path) > 1:
+                    # Calculate total path length
+                    total_length = 0
+                    for i in range(1, len(agent1_path)):
+                        dx = agent1_path[i][0] - agent1_path[i - 1][0]
+                        dy = agent1_path[i][1] - agent1_path[i - 1][1]
+                        total_length += np.sqrt(dx * dx + dy * dy)
 
-        # Update agent1 visualization
+                    # Calculate how many indices to advance based on speed
+                    if total_length > 0:
+                        indices_per_speed = len(agent1_path) / total_length
+                        step_size = max(1, int(agent1_speed * indices_per_speed))
+                    else:
+                        step_size = 1
+
+                    if agent1_path_index < len(agent1_path):
+                        agent1_pos = agent1_path[
+                            min(agent1_path_index, len(agent1_path) - 1)
+                        ]
+                        agent1_path_index += step_size
+                        agent1_status.set_text("Agent 1: Pursuing (constant speed)")
+                    else:
+                        new_path = pathfinder.find_path(agent1_pos, target.position)
+                        if new_path:
+                            agent1_path = new_path
+                            agent1_path_index = 0
+                            if use_smooth_trajectories:
+                                agent1_smooth_path = smooth_path_with_bezier(
+                                    agent1_path
+                                )
+                        agent1_status.set_text("Agent 1: Recalculating")
+
         agent1_point.set_data([agent1_pos[0]], [agent1_pos[1]])
 
-        # Update agent1 path visualization
+        # Update path visualizations
         if agent1_path:
             path1_x = [p[0] for p in agent1_path]
             path1_y = [p[1] for p in agent1_path]
             path1_line.set_data(path1_x, path1_y)
 
-        # ===== AGENT 2 MOVEMENT =====
-        if interceptor_deployed and agent2_pos is not None:
-            if agent2_path and frame_count % agent2_move_frequency == 0:
-                if agent2_path_index < len(agent2_path):
-                    agent2_pos = agent2_path[agent2_path_index]
-                    agent2_path_index += 1
-                    agent2_status.set_text(
-                        f"Agent 2: Intercepting (confidence: {pattern_confidence}%)"
-                    )
-                else:
-                    # Recalculate path when we reach the end
-                    predicted_positions = predict_vehicle_path(target_history)
-                    intercept_point = find_intercept_point(
-                        agent2_pos, predicted_positions
-                    )
-                    agent2_path = pathfinder.find_path(agent2_pos, intercept_point)
-                    agent2_path_index = 0
-                    agent2_status.set_text("Agent 2: Updating interception")
+            if use_smooth_trajectories and agent1_smooth_path:
+                smooth1_x = [p[0] for p in agent1_smooth_path]
+                smooth1_y = [p[1] for p in agent1_smooth_path]
+                smooth_path1_line.set_data(smooth1_x, smooth1_y)
+            else:
+                smooth_path1_line.set_data([], [])
 
-            # Update agent2 visualization
+        # CONSTANT SPEED AGENT 2 MOVEMENT - Move at exact speed every frame
+        if interceptor_deployed and agent2_pos is not None:
+            if agent2_path:
+                if use_smooth_trajectories and agent2_smooth_path:
+                    # CONSTANT PROGRESS STEP based on actual speed
+                    if len(agent2_smooth_path) > 1:
+                        total_path_length = 0
+                        for i in range(1, len(agent2_smooth_path)):
+                            dx = agent2_smooth_path[i][0] - agent2_smooth_path[i - 1][0]
+                            dy = agent2_smooth_path[i][1] - agent2_smooth_path[i - 1][1]
+                            total_path_length += np.sqrt(dx * dx + dy * dy)
+
+                        # Progress step = speed / total_length
+                        progress_step = agent2_speed / max(0.1, total_path_length)
+                    else:
+                        progress_step = 0.1
+
+                    agent2_path_progress = min(
+                        1.0, agent2_path_progress + progress_step
+                    )
+                    agent2_pos = interpolate_agent_position(
+                        agent2_path, agent2_path_progress, True, env
+                    )
+
+                    if agent2_path_progress >= 1.0:
+                        predicted_positions = predict_vehicle_path(target_history)
+                        intercept_point = find_intercept_point(
+                            agent2_pos, predicted_positions
+                        )
+                        new_path = pathfinder.find_path(agent2_pos, intercept_point)
+                        if new_path:
+                            agent2_path = new_path
+                            agent2_path_progress = 0.0
+                            agent2_smooth_path = smooth_path_with_bezier(agent2_path)
+                        agent2_status.set_text("Agent 2: Updating interception")
+                    else:
+                        agent2_status.set_text(
+                            f"Agent 2: Intercepting (constant speed, confidence: {pattern_confidence}%)"
+                        )
+                else:
+                    # CONSTANT DISCRETE MOVEMENT
+                    if agent2_path and len(agent2_path) > 1:
+                        # Calculate total path length
+                        total_length = 0
+                        for i in range(1, len(agent2_path)):
+                            dx = agent2_path[i][0] - agent2_path[i - 1][0]
+                            dy = agent2_path[i][1] - agent2_path[i - 1][1]
+                            total_length += np.sqrt(dx * dx + dy * dy)
+
+                        # Calculate how many indices to advance based on speed
+                        if total_length > 0:
+                            indices_per_speed = len(agent2_path) / total_length
+                            step_size = max(1, int(agent2_speed * indices_per_speed))
+                        else:
+                            step_size = 1
+
+                        if agent2_path_index < len(agent2_path):
+                            agent2_pos = agent2_path[
+                                min(agent2_path_index, len(agent2_path) - 1)
+                            ]
+                            agent2_path_index += step_size
+                            agent2_status.set_text(
+                                f"Agent 2: Intercepting (constant speed, confidence: {pattern_confidence}%)"
+                            )
+                        else:
+                            predicted_positions = predict_vehicle_path(target_history)
+                            intercept_point = find_intercept_point(
+                                agent2_pos, predicted_positions
+                            )
+                            new_path = pathfinder.find_path(agent2_pos, intercept_point)
+                            if new_path:
+                                agent2_path = new_path
+                                agent2_path_index = 0
+                                if use_smooth_trajectories:
+                                    agent2_smooth_path = smooth_path_with_bezier(
+                                        agent2_path
+                                    )
+                            agent2_status.set_text("Agent 2: Updating interception")
+
             agent2_point.set_data([agent2_pos[0]], [agent2_pos[1]])
 
-            # Update agent2 path visualization
             if agent2_path:
                 path2_x = [p[0] for p in agent2_path]
                 path2_y = [p[1] for p in agent2_path]
                 path2_line.set_data(path2_x, path2_y)
+
+                if use_smooth_trajectories and agent2_smooth_path:
+                    smooth2_x = [p[0] for p in agent2_smooth_path]
+                    smooth2_y = [p[1] for p in agent2_smooth_path]
+                    smooth_path2_line.set_data(smooth2_x, smooth2_y)
+                else:
+                    smooth_path2_line.set_data([], [])
         else:
             agent2_point.set_data([], [])
             path2_line.set_data([], [])
+            smooth_path2_line.set_data([], [])
             if not interceptor_deployed:
                 agent2_status.set_text("Agent 2: Waiting")
 
-        # Check for target capture after moving agents and target
+        # Capture detection
         if pursuit_active and interceptor_deployed and agent2_pos is not None:
             if is_target_captured():
                 target_captured = True
                 capture_text.set_text("TARGET CAPTURED!")
-                capture_text.set_alpha(0.1)  # Start fade in
+                capture_text.set_alpha(0.1)
                 agent1_status.set_text("Agent 1: Target secured!")
                 agent2_status.set_text("Agent 2: Target secured!")
                 info_text.set_text("Mission accomplished")
@@ -1134,6 +1340,8 @@ def animate_multi_agent_pursuit(
             target_point,
             path1_line,
             path2_line,
+            smooth_path1_line,
+            smooth_path2_line,
             predicted_path,
             target_trail,
             strategy_text,
@@ -1146,7 +1354,7 @@ def animate_multi_agent_pursuit(
         )
 
     ani = animation.FuncAnimation(
-        fig, update, frames=max_frames, init_func=init, interval=100, blit=True
+        fig, update, frames=max_frames, init_func=init, interval=50, blit=True
     )
 
     plt.tight_layout()
@@ -1159,47 +1367,38 @@ def create_sample_neighborhood(width=20, height=20):
     env = Environment(width, height)
 
     # Add some blocks as obstacles
-    env.add_block(2, 2, 6, 6)
-    env.add_block(2, 8, 6, 6)
-    env.add_block(2, 14, 6, 6)
-    env.add_block(8, 2, 6, 6)
-    env.add_block(8, 8, 6, 6)
-    env.add_block(8, 14, 4, 4)
+    env.add_block(0.5, 2, 7, 5)
+    env.add_block(1, 8, 6.5, 5)
+    env.add_block(1, 14, 6.5, 5)
+    env.add_block(8, 2, 5, 5)
+    env.add_block(8, 8, 5, 5)
+    env.add_block(8, 14, 5, 5)
     env.add_block(14, 2, 5, 5)
-    env.add_block(14, 8, 4, 4)
-    env.add_block(14, 14, 4, 4)
-    env.add_block(6, 14, 6, 6)
-    env.add_block(6, 6, 4, 4)
+    env.add_block(14, 8, 5, 5)
+    env.add_block(14, 14, 5, 5)
+    env.add_block(6.5, 15, 6, 6)
     return env
 
 
-# Update main function with new parameters
+# UPDATED MAIN FUNCTION WITH CONSISTENT SPEEDS
 def main():
-    # Create environment on your own
     env = create_sample_neighborhood()
-
-    # Define start and initial target position
-    start = (0.5, 0.5)  # Bottom left
-    target_position = (13, 18)  # Custom position
-
-    # Create pathfinder
+    start = (0.5, 0.5)
+    target_position = (16.7, 13.6)
     pathfinder = AStar(env)
 
-    # Start the simulation with new parameters:
-    # - Agent 1 waits 3 seconds (30 frames)
-    # - Agent 2 deploys after 10 seconds (100 frames) from when target starts fleeing
-    # - Target is faster than Agent 1 but slower than Agent 2
     try:
         animate_multi_agent_pursuit(
             env,
             pathfinder,
             start,
             target_position,
-            agent1_delay=30,  # 3 seconds
-            agent2_delay=100,  # 10 seconds
-            target_speed=0.5,  # Medium speed
-            agent1_speed=8,  # Slower than target
-            agent2_speed=14,  # Faster than target
+            agent1_delay=30,
+            agent2_delay=100,
+            target_speed=0.25,  # Constant speed throughout
+            agent1_speed=0.2,  # Constant speed throughout
+            agent2_speed=0.3,  # Constant speed throughout
+            use_smooth_trajectories=True,
         )
     except ValueError as e:
         print(f"Error: {e}")
