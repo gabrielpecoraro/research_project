@@ -1,0 +1,64 @@
+# Core ML/RL Dependencies
+torch>=1.12.0
+torchvision>=0.13.0
+numpy>=1.21.0
+scipy>=1.8.0
+matplotlib>=3.5.0
+gym>=0.21.0
+stable-baselines3>=1.6.0
+
+# Computer Vision
+opencv-python>=4.6.0
+pillow>=9.0.0
+ultralytics>=8.0.0
+transformers>=4.20.0
+
+# Web Framework
+fastapi>=0.78.0
+uvicorn>=0.18.0
+requests>=2.28.0
+
+# JetBot Integration (for JetBot hardware only)
+jetbot>=0.4.3
+traitlets>=5.1.0
+ipywidgets>=8.0.0
+
+# Data Processing & Visualization
+pandas>=1.4.0
+seaborn>=0.11.0
+plotly>=5.8.0
+
+# Jupyter Notebook Support
+jupyter>=1.0.0
+notebook>=6.4.0
+ipython>=8.0.0
+
+# Multi-processing & Threading
+multiprocessing-logging>=0.3.0
+threading2>=0.1.2
+
+# Image Processing
+scikit-image>=0.19.0
+imageio>=2.19.0
+
+# Mathematical Operations
+sympy>=1.10.0
+networkx>=2.8.0
+
+# Utility Libraries
+tqdm>=4.64.0
+colorama>=0.4.5
+click>=8.1.0
+
+# Hardware Interface (Raspberry Pi)
+RPi.GPIO>=0.7.1; sys_platform == "linux"
+gpiozero>=1.6.2; sys_platform == "linux"
+
+# Optional: CUDA support (uncomment if using GPU)
+# torch-audio>=0.12.0
+# torchaudio>=0.12.0
+
+# Development Tools
+pytest>=7.1.0
+black>=22.3.0
+flake8>=4.0.0

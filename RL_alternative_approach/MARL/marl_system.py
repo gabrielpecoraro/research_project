@@ -3,15 +3,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from collections import defaultdict, deque
+from collections import deque
 import random
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 import pickle
 import os
 
 
 class QMIXNetwork(nn.Module):
-    """QMIX monotonic value function factorization network"""
+    """
+    QMIX monotonic value function factorization network.
+
+    This network implements the QMIX algorithm for multi-agent reinforcement learning,
+    ensuring monotonic mixing of individual agent Q-values into a global Q-value.
+    """
 
     def __init__(
         self,
@@ -20,6 +25,15 @@ class QMIXNetwork(nn.Module):
         embed_dim: int = 32,
         hypernet_embed: int = 64,
     ):
+        """
+        Initialize QMIX network with hypernetworks for weight generation.
+
+        Args:
+            n_agents (int): Number of agents in the system
+            state_dim (int): Dimension of global state representation
+            embed_dim (int): Embedding dimension for hidden layers
+            hypernet_embed (int): Hypernetwork embedding dimension
+        """
         super(QMIXNetwork, self).__init__()
         self.n_agents = n_agents
         self.state_dim = state_dim
@@ -39,12 +53,14 @@ class QMIXNetwork(nn.Module):
 
     def forward(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass of QMIX network
+        Forward pass of QMIX network with monotonic value mixing.
+
         Args:
-            agent_qs: Individual agent Q-values [batch_size, n_agents]
-            states: Global state [batch_size, state_dim]
+            agent_qs (torch.Tensor): Individual agent Q-values [batch_size, n_agents]
+            states (torch.Tensor): Global state [batch_size, state_dim]
+
         Returns:
-            Total Q-value [batch_size, 1]
+            torch.Tensor: Total Q-value [batch_size, 1]
         """
         batch_size = agent_qs.size(0)
 
@@ -75,9 +91,22 @@ class QMIXNetwork(nn.Module):
 
 
 class AgentDQN(nn.Module):
-    """Individual agent DQN network"""
+    """
+    Individual agent Deep Q-Network for decentralized execution.
+
+    This network represents the policy for a single agent, taking local observations
+    and producing Q-values for all possible actions in the agent's action space.
+    """
 
     def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128):
+        """
+        Initialize agent DQN with fully connected layers.
+
+        Args:
+            obs_dim (int): Dimension of agent's local observation space
+            action_dim (int): Number of possible actions for the agent
+            hidden_dim (int): Number of hidden units in network layers
+        """
         super(AgentDQN, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -88,11 +117,25 @@ class AgentDQN(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through agent network.
+
+        Args:
+            obs (torch.Tensor): Agent observation tensor
+
+        Returns:
+            torch.Tensor: Q-values for all actions
+        """
         return self.network(obs)
 
 
 class SequenceModelingTransformer(nn.Module):
-    """Transformer for sequence modeling as inspired by the 2022 paper"""
+    """
+    Transformer architecture for sequence modeling in multi-agent scenarios.
+
+    This model captures temporal dependencies and agent interactions through
+    self-attention mechanisms, enabling better coordination strategies.
+    """
 
     def __init__(
         self,
@@ -104,6 +147,18 @@ class SequenceModelingTransformer(nn.Module):
         n_layers: int = 2,
         max_seq_len: int = 50,
     ):
+        """
+        Initialize transformer for multi-agent sequence modeling.
+
+        Args:
+            obs_dim (int): Observation dimension
+            action_dim (int): Action space dimension
+            n_agents (int): Number of agents
+            d_model (int): Model dimension for transformer
+            n_heads (int): Number of attention heads
+            n_layers (int): Number of transformer layers
+            max_seq_len (int): Maximum sequence length for positional encoding
+        """
         super(SequenceModelingTransformer, self).__init__()
         self.d_model = d_model
         self.max_seq_len = max_seq_len
@@ -137,12 +192,16 @@ class SequenceModelingTransformer(nn.Module):
         positions: torch.Tensor,
     ) -> List[torch.Tensor]:
         """
-        Forward pass for sequence modeling
+        Forward pass for sequence modeling with multi-head attention.
+
         Args:
-            obs_seq: Observation sequence [batch_size, seq_len, obs_dim]
-            action_seq: Action sequence [batch_size, seq_len]
-            agent_ids: Agent ID sequence [batch_size, seq_len]
-            positions: Position in sequence [batch_size, seq_len]
+            obs_seq (torch.Tensor): Observation sequence [batch_size, seq_len, obs_dim]
+            action_seq (torch.Tensor): Action sequence [batch_size, seq_len]
+            agent_ids (torch.Tensor): Agent ID sequence [batch_size, seq_len]
+            positions (torch.Tensor): Position in sequence [batch_size, seq_len]
+
+        Returns:
+            List[torch.Tensor]: Action predictions for each agent
         """
         batch_size, seq_len = obs_seq.shape[:2]
 
@@ -169,7 +228,12 @@ class SequenceModelingTransformer(nn.Module):
 
 
 class MARLPursuitSystem:
-    """Multi-Agent Reinforcement Learning system for pursuit scenarios"""
+    """
+    Multi-Agent Reinforcement Learning system for pursuit scenarios.
+
+    This system integrates QMIX, individual agent DQNs, and sequence modeling
+    to enable coordinated multi-agent pursuit behaviors in complex environments.
+    """
 
     def __init__(
         self,
@@ -180,6 +244,17 @@ class MARLPursuitSystem:
         lr: float = 0.001,
         device: torch.device = None,
     ):
+        """
+        Initialize multi-agent reinforcement learning system.
+
+        Args:
+            env_width (int): Environment width in grid units
+            env_height (int): Environment height in grid units
+            max_agents (int): Maximum number of agents in the system
+            obs_radius (int): Observation radius for local agent observations
+            lr (float): Learning rate for all networks
+            device (torch.device): Computing device for neural networks
+        """
         # Set device
         if device is None:
             if torch.backends.mps.is_available():
@@ -275,7 +350,18 @@ class MARLPursuitSystem:
         other_agents: List[Tuple[float, float]],
         target_pos: Tuple[float, float],
     ) -> np.ndarray:
-        """Get local observation for an agent"""
+        """
+        Generate local observation for an agent based on its position and surroundings.
+
+        Args:
+            agent_pos (Tuple[float, float]): Current agent position
+            env: Environment instance for spatial queries
+            other_agents (List[Tuple[float, float]]): Positions of other agents
+            target_pos (Tuple[float, float]): Current target position
+
+        Returns:
+            np.ndarray: Concatenated local observation vector
+        """
         x, y = int(agent_pos[0]), int(agent_pos[1])
 
         # Local grid observation
@@ -322,7 +408,17 @@ class MARLPursuitSystem:
         agent_positions: List[Tuple[float, float]],
         target_pos: Tuple[float, float],
     ) -> np.ndarray:
-        """Get global state for QMIX"""
+        """
+        Generate global state representation for QMIX network.
+
+        Args:
+            env: Environment instance for map information
+            agent_positions (List[Tuple[float, float]]): All agent positions
+            target_pos (Tuple[float, float]): Current target position
+
+        Returns:
+            np.ndarray: Global state vector for centralized training
+        """
         # Create full environment map
         env_map = np.zeros(self.env_width * self.env_height)
         for y in range(self.env_height):
@@ -346,7 +442,17 @@ class MARLPursuitSystem:
     def select_action(
         self, observation: np.ndarray, agent_id: int, training: bool = True
     ) -> int:
-        """Select action using epsilon-greedy policy"""
+        """
+        Select action using epsilon-greedy policy for exploration-exploitation balance.
+
+        Args:
+            observation (np.ndarray): Agent's local observation
+            agent_id (int): ID of the agent selecting action
+            training (bool): Whether in training mode (enables exploration)
+
+        Returns:
+            int: Selected action index
+        """
         if training and random.random() < self.epsilon:
             return random.randint(0, self.action_dim - 1)
 
@@ -356,16 +462,35 @@ class MARLPursuitSystem:
             return q_values.argmax().item()
 
     def store_experience(self, state, actions, rewards, next_state, dones):
-        """Store experience in replay buffer"""
+        """
+        Store experience tuple in replay buffer for experience replay.
+
+        Args:
+            state: Current state information
+            actions: Actions taken by all agents
+            rewards: Rewards received by all agents
+            next_state: Next state information
+            dones: Episode termination flags
+        """
         self.replay_buffer.append((state, actions, rewards, next_state, dones))
 
     def store_sequence(self, episode_data):
-        """Store episode sequence for transformer training"""
+        """
+        Store episode sequence for transformer training.
+
+        Args:
+            episode_data: Complete episode data with sequential information
+        """
         if len(episode_data) > 2:
             self.sequence_buffer.append(episode_data)
 
     def train_step(self):
-        """Perform one training step"""
+        """
+        Perform one training step using experience replay and QMIX algorithm.
+
+        This method samples from the replay buffer and updates both individual
+        agent networks and the QMIX mixing network using temporal difference learning.
+        """
         if len(self.replay_buffer) < self.batch_size:
             return
 
@@ -373,31 +498,25 @@ class MARLPursuitSystem:
         batch = random.sample(self.replay_buffer, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        # Convert to tensors and move to device - fix the numpy array warning
+        # Convert to tensors and move to device
         states = torch.FloatTensor(np.array(states)).to(self.device)
         actions = torch.LongTensor(np.array(actions)).to(self.device)
         rewards = torch.FloatTensor(np.array(rewards)).to(self.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
         dones = torch.BoolTensor(np.array(dones)).to(self.device)
 
-        # Since states are flattened (batch_size, flattened_obs + global_state),
-        # we need to separate agent observations from global state
-        obs_size = (
-            self.max_agents * self.obs_dim
-        )  # Size of flattened agent observations
-
-        # Check if states have the expected size
+        # Extract agent observations and global state
+        obs_size = self.max_agents * self.obs_dim
         expected_total_size = obs_size + self.state_dim
         if states.shape[1] != expected_total_size:
-            # Adjust obs_size if needed
             obs_size = states.shape[1] - self.state_dim
 
         # Extract agent observations and reshape
-        agent_obs_flat = states[:, :obs_size]  # [batch_size, max_agents * obs_dim]
+        agent_obs_flat = states[:, :obs_size]
         agent_obs = agent_obs_flat.view(self.batch_size, self.max_agents, self.obs_dim)
 
         # Extract global state
-        global_states = states[:, obs_size:]  # [batch_size, state_dim]
+        global_states = states[:, obs_size:]
 
         # Same for next states
         next_agent_obs_flat = next_states[:, :obs_size]
@@ -409,7 +528,7 @@ class MARLPursuitSystem:
         # Get current Q-values for each agent
         current_q_values = []
         for i in range(self.max_agents):
-            agent_obs_i = agent_obs[:, i, :]  # [batch_size, obs_dim]
+            agent_obs_i = agent_obs[:, i, :]
             q_vals = self.agent_networks[i](agent_obs_i)
             current_q_values.append(q_vals.gather(1, actions[:, i].unsqueeze(1)))
 
@@ -442,21 +561,13 @@ class MARLPursuitSystem:
         qmix_loss.backward()
         self.qmix_optimizer.step()
 
-        # Update individual agent networks separately to avoid graph conflicts
-        # We need to recompute Q-values for each agent independently
+        # Update individual agent networks separately
         for i in range(self.max_agents):
-            # Zero gradients for this agent
             self.agent_optimizers[i].zero_grad()
-
-            # Recompute Q-values for this agent only
-            agent_obs_i = agent_obs[:, i, :].detach()  # Detach to avoid graph issues
+            agent_obs_i = agent_obs[:, i, :].detach()
             q_vals = self.agent_networks[i](agent_obs_i)
             current_q_i = q_vals.gather(1, actions[:, i].unsqueeze(1))
-
-            # Use detached target for individual agent loss
             agent_loss = F.mse_loss(current_q_i, target_total_q.detach())
-
-            # Backward and step for this agent
             agent_loss.backward()
             self.agent_optimizers[i].step()
 
@@ -467,7 +578,12 @@ class MARLPursuitSystem:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def train_sequence_model(self):
-        """Train the sequence modeling transformer"""
+        """
+        Train the sequence modeling transformer using stored episode sequences.
+
+        This method enables the system to learn temporal patterns and improve
+        coordination through attention mechanisms over action sequences.
+        """
         if len(self.sequence_buffer) < 10:
             return
 
@@ -522,7 +638,12 @@ class MARLPursuitSystem:
             self.seq_optimizer.step()
 
     def soft_update_targets(self):
-        """Soft update target networks"""
+        """
+        Perform soft update of target networks using exponential moving average.
+
+        This provides stable learning by slowly updating target networks
+        used for computing temporal difference targets.
+        """
         for target_net, main_net in zip(self.target_networks, self.agent_networks):
             for target_param, main_param in zip(
                 target_net.parameters(), main_net.parameters()
@@ -539,7 +660,17 @@ class MARLPursuitSystem:
             )
 
     def run_episode(self, env, pathfinder, max_steps: int = 1000) -> Dict:
-        """Run a single episode"""
+        """
+        Execute a complete episode with dynamic agent deployment and target pursuit.
+
+        Args:
+            env: Environment instance for simulation
+            pathfinder: Pathfinding system for expert guidance
+            max_steps (int): Maximum steps per episode
+
+        Returns:
+            Dict: Episode results including success, rewards, and trajectory data
+        """
         # Reset environment
         start_pos = (0.5, 0.5)
         target_start = (
@@ -552,9 +683,7 @@ class MARLPursuitSystem:
         agent_positions = [start_pos] + [None] * (self.max_agents - 1)
 
         # Initialize target
-        from RL_alternative_approach.MARL.pathfinding_marl import (
-            VehicleTarget,
-        )  # Import your target class
+        from RL_alternative_approach.MARL.pathfinding_marl import VehicleTarget
 
         target = VehicleTarget(env, target_start, speed=0.25)
 
@@ -698,12 +827,19 @@ class MARLPursuitSystem:
         }
 
     def train(self, env, pathfinder, num_episodes: int = 1000):
-        """Train the MARL system"""
+        """
+        Execute complete training loop with periodic network updates and evaluation.
+
+        Args:
+            env: Training environment instance
+            pathfinder: Pathfinding system for reference
+            num_episodes (int): Total number of training episodes
+        """
         print("Starting MARL training...")
 
         for episode in range(num_episodes):
             # Run episode
-            result = self.run_episode(env, pathfinder)
+            _ = self.run_episode(env, pathfinder)
 
             # Train networks
             if episode % 4 == 0:  # Train every 4 episodes
@@ -727,7 +863,12 @@ class MARLPursuitSystem:
         print("Training completed!")
 
     def save_models(self, path: str):
-        """Save trained models"""
+        """
+        Save all trained model parameters and training statistics.
+
+        Args:
+            path (str): Directory path for saving model files
+        """
         os.makedirs(path, exist_ok=True)
 
         # Save agent networks
@@ -750,7 +891,12 @@ class MARLPursuitSystem:
             pickle.dump(stats, f)
 
     def load_models(self, path: str):
-        """Load trained models"""
+        """
+        Load previously trained model parameters and training statistics.
+
+        Args:
+            path (str): Directory path containing saved model files
+        """
         # Load agent networks
         for i, net in enumerate(self.agent_networks):
             net.load_state_dict(torch.load(f"{path}/agent_{i}.pt"))
@@ -769,9 +915,16 @@ class MARLPursuitSystem:
             self.success_rate = deque(stats["success_rate"], maxlen=100)
 
 
-# Integration function with your existing code
 def integrate_marl_with_pathfinding():
-    """Example of how to integrate MARL with your existing pathfinding code"""
+    """
+    Integration function demonstrating MARL system usage with pathfinding algorithms.
+
+    This function creates a complete MARL training pipeline integrated with
+    existing pathfinding systems for multi-agent pursuit scenarios.
+
+    Returns:
+        MARLPursuitSystem: Trained multi-agent system ready for deployment
+    """
     from RL_alternative_approach.MARL.pathfinding_marl import (
         create_sample_neighborhood,
         AStar,
@@ -796,5 +949,5 @@ def integrate_marl_with_pathfinding():
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage demonstrating system integration
     marl_system = integrate_marl_with_pathfinding()

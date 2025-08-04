@@ -11,14 +11,37 @@ import numpy as np
 
 
 class AdaptivePathfindingExpert:
+    """
+    Adaptive expert system that generates pathfinding demonstrations for struggling scenarios.
+
+    This class provides expert guidance by running pathfinding algorithms on specific
+    scenarios where the learning algorithm is performing poorly, generating high-quality
+    demonstration data to improve learning performance.
+    """
+
     def __init__(self, env):
+        """
+        Initialize the adaptive pathfinding expert system.
+
+        Args:
+            env: Base environment instance used as template for demonstrations
+        """
         self.env = env
         self.pathfinder = AStar(env.env)  # Use the grid environment for pathfinding
 
     def generate_expert_demonstration_for_scenario(self, scenario_config):
         """
-        Run the pathfinding algorithm on the exact current scenario
-        and extract the action sequence as expert demonstration
+        Generate expert demonstration by running pathfinding algorithm on a specific scenario.
+
+        This method creates a demonstration by executing optimal pathfinding strategies
+        on the exact scenario configuration where the learning algorithm is struggling.
+
+        Args:
+            scenario_config (dict): Configuration dictionary containing agent positions,
+                                  target state, and environment parameters
+
+        Returns:
+            dict: Demonstration data containing states, actions, rewards, and transitions
         """
         print("Generating pathfinding demonstration for struggling scenario...")
 
@@ -28,11 +51,19 @@ class AdaptivePathfindingExpert:
         # Run pathfinding simulation
         demonstration = self._run_pathfinding_simulation(demo_env, scenario_config)
 
-        print(f"xsGenerated {len(demonstration['actions'])} expert action steps")
+        print(f"Generated {len(demonstration['actions'])} expert action steps")
         return demonstration
 
     def _create_demo_environment(self, scenario_config):
-        """Create environment matching the current struggling scenario"""
+        """
+        Create demonstration environment matching the current struggling scenario.
+
+        Args:
+            scenario_config (dict): Scenario configuration parameters
+
+        Returns:
+            PursuitEnvironment: Environment instance configured to match scenario
+        """
         from pursuit_environment import PursuitEnvironment
 
         # Create identical environment
@@ -63,8 +94,16 @@ class AdaptivePathfindingExpert:
         return demo_env
 
     def _run_pathfinding_simulation(self, demo_env, scenario_config):
-        """Run the pathfinding algorithm and capture action sequence"""
+        """
+        Execute pathfinding algorithm simulation and capture action sequence.
 
+        Args:
+            demo_env: Demonstration environment instance
+            scenario_config (dict): Scenario configuration parameters
+
+        Returns:
+            dict: Complete demonstration data with state transitions and expert actions
+        """
         # This simulates what your pathfinding animation does
         demonstration = {
             "states": [],
@@ -105,14 +144,22 @@ class AdaptivePathfindingExpert:
 
             if done:
                 print(
-                    f"📊 Pathfinding demo completed in {step + 1} steps - Captured: {info.get('captured', False)}"
+                    f"Pathfinding demo completed in {step + 1} steps - Captured: {info.get('captured', False)}"
                 )
                 break
 
         return demonstration
 
     def _generate_pathfinding_actions(self, env):
-        """Generate actions using the same logic as your pathfinding animation"""
+        """
+        Generate optimal actions using pathfinding logic for both agents.
+
+        Args:
+            env: Environment instance for action generation
+
+        Returns:
+            list: Action indices for both agents [agent1_action, agent2_action]
+        """
         actions = [4, 4]  # Default: stay in place
 
         # Agent 1: Direct pursuit when deployed (exactly like your animation)
@@ -160,7 +207,18 @@ class AdaptivePathfindingExpert:
         return actions
 
     def _predict_intercept_point(self, env):
-        """Simplified version of your pathfinding interception prediction"""
+        """
+        Predict optimal interception point for Agent 2 based on target movement.
+
+        This method implements a simplified version of the interception prediction
+        used in the pathfinding animation system.
+
+        Args:
+            env: Environment instance containing target and agent information
+
+        Returns:
+            tuple: Predicted interception coordinates (x, y)
+        """
         target_pos = env.target.position
 
         # Simple prediction: where target will be in a few steps
@@ -194,7 +252,19 @@ class AdaptivePathfindingExpert:
         return (opposite_x, opposite_y)
 
     def _position_to_action(self, current_pos, next_pos):
-        """Convert position difference to discrete action (same as expert system)"""
+        """
+        Convert position difference to discrete action index.
+
+        Maps continuous position changes to one of 8 discrete directional actions
+        or stay-in-place action based on movement angle.
+
+        Args:
+            current_pos (tuple): Current agent position (x, y)
+            next_pos (tuple): Target position (x, y)
+
+        Returns:
+            int: Action index (0-7 for directions, 4 for stay)
+        """
         dx = next_pos[0] - current_pos[0]
         dy = next_pos[1] - current_pos[1]
 
@@ -223,5 +293,14 @@ class AdaptivePathfindingExpert:
             return 3  # SE
 
     def _direct_movement_action(self, agent_pos, target_pos):
-        """Direct movement when pathfinding fails"""
+        """
+        Generate direct movement action when pathfinding fails.
+
+        Args:
+            agent_pos (tuple): Current agent position
+            target_pos (tuple): Target position
+
+        Returns:
+            int: Action index for direct movement toward target
+        """
         return self._position_to_action(agent_pos, target_pos)

@@ -21,19 +21,45 @@ except ImportError as e:
 
 
 class PerformanceMonitor:
+    """
+    Monitor algorithm performance to detect when the learning algorithm is struggling.
+
+    This class tracks multiple performance metrics including capture rates, reward trends,
+    and episode lengths to identify when additional expert guidance may be beneficial.
+    """
+
     def __init__(self, window_size=100):
+        """
+        Initialize performance monitor.
+
+        Args:
+            window_size (int): Size of the sliding window for performance metrics
+        """
         self.window_size = window_size
         self.recent_captures = deque(maxlen=window_size)
         self.recent_rewards = deque(maxlen=window_size)
         self.recent_episode_lengths = deque(maxlen=window_size)
 
     def add_episode(self, captured, reward, length):
+        """
+        Add episode data to performance tracking.
+
+        Args:
+            captured (bool): Whether the target was captured in this episode
+            reward (float): Total reward received in this episode
+            length (int): Number of steps in this episode
+        """
         self.recent_captures.append(captured)
         self.recent_rewards.append(reward)
         self.recent_episode_lengths.append(length)
 
     def is_struggling(self):
-        """Detect if the algorithm is struggling based on multiple metrics"""
+        """
+        Detect if the algorithm is struggling based on multiple metrics.
+
+        Returns:
+            tuple: (struggling, info_dict) where struggling is bool and info_dict contains details
+        """
         if len(self.recent_captures) < self.window_size:
             return False
 
@@ -71,6 +97,18 @@ class PerformanceMonitor:
     def _get_struggle_reason(
         self, capture_rate, reward_declining, avg_length, max_length
     ):
+        """
+        Generate human-readable reason for struggling performance.
+
+        Args:
+            capture_rate (float): Current capture rate
+            reward_declining (bool): Whether rewards are declining
+            avg_length (float): Average episode length
+            max_length (int): Maximum reasonable episode length
+
+        Returns:
+            str: Comma-separated list of reasons for poor performance
+        """
         reasons = []
         if capture_rate < 0.3:
             reasons.append(f"low capture rate ({capture_rate:.2f})")
@@ -82,9 +120,26 @@ class PerformanceMonitor:
 
 
 class QMixTrainer:
+    """
+    QMIX training system with hybrid coordination and pathfinding guidance.
+
+    This trainer implements a hybrid approach where:
+    - Agent 1 uses deterministic A* pathfinding (no learning)
+    - Agent 2 learns coordination strategies through MARL
+    - Optional expert guidance through pathfinding demonstrations
+    """
+
     def __init__(
         self, device="mps", use_pathfinding_guidance=False, guidance_weight=0.3
     ):
+        """
+        Initialize the QMIX trainer.
+
+        Args:
+            device (str): Computing device ('mps', 'cuda', or 'cpu')
+            use_pathfinding_guidance (bool): Whether to use expert pathfinding guidance
+            guidance_weight (float): Weight for expert guidance in learning
+        """
         self.device = device
         self.use_pathfinding_guidance = (
             use_pathfinding_guidance and PATHFINDING_AVAILABLE
@@ -179,7 +234,12 @@ class QMixTrainer:
         self.struggle_demo_count = 0
 
     def update_plots(self, episode):
-        """Update all training visualization plots"""
+        """
+        Update all training visualization plots.
+
+        Args:
+            episode (int): Current episode number
+        """
         if not self.training_stats["episode_rewards"]:
             return
 
@@ -286,7 +346,12 @@ class QMixTrainer:
             pass
 
     def save_training_stats(self, filename):
-        """Save training statistics to file"""
+        """
+        Save training statistics to file.
+
+        Args:
+            filename (str): Path to save the statistics file
+        """
         stats_to_save = {
             "training_stats": self.training_stats,
             "flow_stats": self.flow_stats,
@@ -302,7 +367,15 @@ class QMixTrainer:
             print(f"Warning: Could not save training statistics: {e}")
 
     def load_training_stats(self, filename):
-        """Load training statistics from file"""
+        """
+        Load training statistics from file.
+
+        Args:
+            filename (str): Path to load the statistics file from
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             with open(filename, "rb") as f:
                 data = pickle.load(f)
@@ -315,7 +388,7 @@ class QMixTrainer:
             return False
 
     def plot_final_training_summary(self):
-        """Create a comprehensive training summary plot"""
+        """Create a comprehensive training summary plot after training completion."""
         if not self.training_stats["episode_rewards"]:
             print("No training data to plot")
             return
@@ -501,7 +574,18 @@ class QMixTrainer:
     def train(
         self, num_episodes=5000, visualize_every=50, save_every=500, expert_ratio=0.4
     ):
-        """Training with pathfinding flow imitation"""
+        """
+        Main training loop with pathfinding flow imitation.
+
+        Args:
+            num_episodes (int): Total number of training episodes
+            visualize_every (int): Frequency of visualization updates
+            save_every (int): Frequency of model checkpoints
+            expert_ratio (float): Initial ratio of expert guidance
+
+        Returns:
+            QMIX agent: Trained QMIX agent
+        """
         print("Starting QMIX training with pathfinding flow imitation...")
         print(f"Expert guidance ratio: {expert_ratio}")
         print("Both agents start from (0.5, 0.5) every episode")
@@ -653,7 +737,7 @@ class QMixTrainer:
                 if training_phase and agent2_learning:
                     if step <= 25:
                         print(
-                            f"  🎓 HYBRID TRAINING: Agent 2 learning coordination with A* Agent 1"
+                            "  HYBRID TRAINING: Agent 2 learning coordination with A* Agent 1"
                         )
 
                     # Store experience for Agent 2's learning
@@ -670,19 +754,19 @@ class QMixTrainer:
                     training_steps += 1
                 elif not training_phase:
                     if step <= 25:
-                        print(f"  ⏸️  NO TRAINING: Agent 1 pathfinding phase")
+                        print("  NO TRAINING: Agent 1 pathfinding phase")
 
                 # Update state
-                global_state = next_global_state
+                _ = next_global_state
                 individual_obs = next_individual_obs
                 episode_reward += reward
 
             # Update episode summary to reflect hybrid learning
-            print(f"\n📊 Episode {episode} Summary:")
+            print(f"\nEpisode {episode} Summary:")
             print(f"   Total steps: {step}")
             print(f"   Agent 2 training steps: {training_steps}")
-            print(f"   Agent 1: A* pathfinding (deterministic)")
-            print(f"   Agent 2: MARL coordination (learning)")
+            print("   Agent 1: A* pathfinding (deterministic)")
+            print("   Agent 2: MARL coordination (learning)")
             print(f"   Coordination reward: {coordination_reward:.2f}")
             print(f"   Captured: {info.get('captured', False)}")
             print(
@@ -725,10 +809,10 @@ class QMixTrainer:
                 struggling, struggle_info = self.performance_monitor.is_struggling()
 
                 if struggling and self.adaptive_expert is not None:
-                    print(f"\n🚨 ALGORITHM STRUGGLING at episode {episode}")
-                    print(f"📊 Reason: {struggle_info['reason']}")
-                    print(f"🎯 Capture rate: {struggle_info['capture_rate']:.3f}")
-                    print(f"📏 Avg episode length: {struggle_info['avg_length']:.1f}")
+                    print(f"\nALGORITHM STRUGGLING at episode {episode}")
+                    print(f"Reason: {struggle_info['reason']}")
+                    print(f"Capture rate: {struggle_info['capture_rate']:.3f}")
+                    print(f"Avg episode length: {struggle_info['avg_length']:.1f}")
 
                     # Generate expert demonstrations for recent struggling scenarios
                     self._generate_adaptive_demonstrations(env, episode, agent)
@@ -737,7 +821,7 @@ class QMixTrainer:
                     original_expert_ratio = expert_ratio
                     expert_ratio = min(0.9, expert_ratio + 0.3)
                     print(
-                        f"🔧 Temporarily increased expert guidance to {expert_ratio:.2f}"
+                        f"Temporarily increased expert guidance to {expert_ratio:.2f}"
                     )
 
                     # Record struggle episode
@@ -754,7 +838,7 @@ class QMixTrainer:
                     # Reduce expert ratio back after some episodes
                     if episode % 100 == 0 and expert_ratio > original_expert_ratio:
                         expert_ratio = max(original_expert_ratio, expert_ratio - 0.1)
-                        print(f"🔄 Reduced expert guidance back to {expert_ratio:.2f}")
+                        print(f"Reduced expert guidance back to {expert_ratio:.2f}")
 
             # Update visualization
             if episode % 10 == 0:
@@ -793,7 +877,7 @@ class QMixTrainer:
                         if s["episode"] > episode - 500
                     ]
                     if recent_struggles:
-                        print(f"📊 Recent struggles: {len(recent_struggles)} episodes")
+                        print(f"Recent struggles: {len(recent_struggles)} episodes")
 
                 # Update learning rate
                 scheduler.step()
@@ -812,10 +896,10 @@ class QMixTrainer:
                     if self.use_pathfinding_guidance
                     else "qmix_model"
                 )
-                agent.save(f"{model_name}_episode_{episode}.pth")
+                agent.save(f"../models/{model_name}_episode_{episode}.pth")
                 self.save_training_stats(f"flow_training_stats_episode_{episode}.pkl")
 
-            # In the training loop, gradually increase difficulty:
+            # Gradually increase difficulty
             if episode > 0 and episode % 1000 == 0:
                 # Gradually make capture conditions stricter
                 if hasattr(env, "capture_radius"):
@@ -829,7 +913,7 @@ class QMixTrainer:
             else "qmix_model_final"
         )
         agent.save(f"{model_name}.pth")
-        self.save_training_stats("flow_training_stats_final.pkl")
+        self.save_training_stats("../models/flow_training_stats_final.pkl")
 
         print("Training completed!")
         print(
@@ -842,7 +926,17 @@ class QMixTrainer:
         return agent
 
     def calculate_flow_reward(self, env, actions, expert_actions):
-        """Calculate reward for following the pathfinding flow"""
+        """
+        Calculate reward for following the pathfinding flow.
+
+        Args:
+            env: Environment instance
+            actions: Actions taken by agents
+            expert_actions: Expert-recommended actions
+
+        Returns:
+            float: Flow-based reward
+        """
         reward = 0.0
 
         # Reward for correct deployment timing
@@ -862,7 +956,14 @@ class QMixTrainer:
         return reward
 
     def visualize_episode_with_flow(self, env, episode, step):
-        """Visualize episode with flow information"""
+        """
+        Visualize episode with flow information.
+
+        Args:
+            env: Environment instance
+            episode (int): Current episode number
+            step (int): Current step number
+        """
         if self.use_pathfinding_guidance:
             return  # Skip when using pathfinding guidance
 
@@ -909,7 +1010,14 @@ class QMixTrainer:
         plt.pause(0.01)
 
     def _generate_adaptive_demonstrations(self, current_env, current_episode, agent):
-        """Generate expert demonstrations for the current struggling scenario"""
+        """
+        Generate expert demonstrations for the current struggling scenario.
+
+        Args:
+            current_env: Current environment instance
+            current_episode (int): Current episode number
+            agent: QMIX agent instance
+        """
         try:
             # Create scenario config from current environment state
             scenario_config = {
@@ -952,13 +1060,13 @@ class QMixTrainer:
             self.struggle_demo_count += demo_count
             self.flow_stats["adaptive_demos_generated"] += 1
 
-            print(f"✅ Added {demo_count} adaptive expert transitions to replay buffer")
+            print(f"Added {demo_count} adaptive expert transitions to replay buffer")
             print(
-                f"📈 Total adaptive demos generated: {self.flow_stats['adaptive_demos_generated']}"
+                f"Total adaptive demos generated: {self.flow_stats['adaptive_demos_generated']}"
             )
 
         except Exception as e:
-            print(f"❌ Failed to generate adaptive demonstration: {e}")
+            print(f"Failed to generate adaptive demonstration: {e}")
 
 
 if __name__ == "__main__":

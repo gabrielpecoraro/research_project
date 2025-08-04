@@ -528,7 +528,7 @@ def smooth_path_with_bezier(path, smoothing_factor=0.05, num_points=None):
         smooth_path = list(zip(x_smooth, y_smooth))
 
         return smooth_path
-    except:
+    except Exception:
         # If spline fails, fall back to original path
         return path
 
@@ -641,8 +641,6 @@ def animate_multi_agent_pursuit(
 
     # CONSTANT MOVEMENT FREQUENCY - Every frame, agents move at their specified speed
     # No more variable frequencies - agents move every frame with their actual speed
-    agent1_move_every_frame = True
-    agent2_move_every_frame = True
 
     agent2_pos = None
     agent2_path = None
@@ -679,7 +677,6 @@ def animate_multi_agent_pursuit(
     )
 
     target_captured = False
-    capture_distance = 2.5
 
     def is_target_captured():
         """
@@ -751,7 +748,7 @@ def animate_multi_agent_pursuit(
             # Only capture if absolutely NO escape routes exist
             if escape_routes == 0:
                 info_text.set_text(
-                    f"CAPTURED! Both agents very close and no escape routes"
+                    "CAPTURED! Both agents very close and no escape routes"
                 )
                 return True
             else:

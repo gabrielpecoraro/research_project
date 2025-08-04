@@ -281,7 +281,7 @@ class PursuitEnvironment:
 
     def reset(self):
         """Reset environment for hybrid training"""
-        print(f"\n🔄 ENVIRONMENT RESET")
+        print(" ENVIRONMENT RESET")
 
         # Reset positions
         self.agent_positions = [(0.5, 0.5), (0.5, 0.5)]
@@ -344,11 +344,11 @@ class PursuitEnvironment:
         self.target_history = [self.target.position]
         self.step_count = 0
 
-        print(f"🎯 Target at: {self.target.position}")
-        print(f"🤖 Agents start at: {self.agent_positions}")
-        print(f"📋 Hybrid training ready:")
-        print(f"   Steps 1-20: Agent 1 uses A* pathfinding")
-        print(f"   Steps 21+: Agent 1 (A*) + Agent 2 (MARL coordination)")
+        print(f"Target at: {self.target.position}")
+        print(f"Agents start at: {self.agent_positions}")
+        print("Hybrid training ready:")
+        print("   Steps 1-20: Agent 1 uses A* pathfinding")
+        print("   Steps 21+: Agent 1 (A*) + Agent 2 (MARL coordination)")
 
         return self._get_global_state(), self._get_individual_observations()
 
@@ -364,7 +364,7 @@ class PursuitEnvironment:
                 self.agent1_deploy_step = self.step_count
                 self.pursuit_active = True
                 print(
-                    f"🚀 Agent 1 deployed with A* pathfinding at step {self.step_count}"
+                    f" Agent 1 deployed with A* pathfinding at step {self.step_count}"
                 )
 
             # Agent 1 uses deterministic A* pathfinding (NO LEARNING)
@@ -384,9 +384,9 @@ class PursuitEnvironment:
                 self.agent2_deployed = True
                 self.agent2_deploy_step = self.step_count
                 print(
-                    f"🤖 Agent 2 deployed for LEARNED interception at step {self.step_count}"
+                    f" Agent 2 deployed for LEARNED interception at step {self.step_count}"
                 )
-                print(f"🎮 HYBRID COORDINATION: Agent 1 (A*) + Agent 2 (MARL)")
+                print(" HYBRID COORDINATION: Agent 1 (A*) + Agent 2 (MARL)")
 
             # Agent 1 continues using deterministic A* pathfinding
             self._move_agent1_with_astar()
@@ -585,7 +585,7 @@ class PursuitEnvironment:
         agent2_pos = np.array(self.agent_positions[1])
 
         # Distance rewards (closer is better)
-        dist1 = np.linalg.norm(agent1_pos - target_pos)
+        _ = np.linalg.norm(agent1_pos - target_pos)
         dist2 = np.linalg.norm(agent2_pos - target_pos)
 
         # Reward Agent 2 for getting closer to target
@@ -841,7 +841,7 @@ class PursuitEnvironment:
         # Simple proximity capture
         capture_radius = 2.5
         if dist1 <= capture_radius and dist2 <= capture_radius:
-            print(f"🏆 TARGET CAPTURED!")
+            print("TARGET CAPTURED!")
             print(f"   Agent 1 distance: {dist1:.2f}")
             print(f"   Agent 2 distance: {dist2:.2f}")
             return True
@@ -879,7 +879,7 @@ class PursuitEnvironment:
 
             return escape_count
 
-        except Exception as e:
+        except Exception:
             return 4  # Default
 
 

@@ -1,20 +1,42 @@
 import numpy as np
-import random
 from RL_alternative_approach.MARL.pathfinding_marl import (
     AStar,
     smooth_path_with_bezier,
-    VehicleTarget,
 )
 from pursuit_environment import PursuitEnvironment
 
 
 class PathfindingFlowExpertSystem:
+    """
+    Expert system that generates pathfinding-based demonstrations for multi-agent learning.
+
+    This class implements sophisticated pathfinding strategies for coordinated pursuit scenarios,
+    providing high-quality expert demonstrations to guide reinforcement learning algorithms.
+    """
+
     def __init__(self, env):
+        """
+        Initialize the pathfinding expert system.
+
+        Args:
+            env: Environment instance used as template for pathfinding operations
+        """
         self.env = env
         self.pathfinder = AStar(env.env)
 
     def generate_expert_actions_with_flow(self, env_state):
-        """Improved expert actions with better coordination"""
+        """
+        Generate expert actions with improved coordination strategies.
+
+        This method implements sophisticated multi-agent coordination by combining
+        direct pursuit and strategic interception behaviors based on current environment state.
+
+        Args:
+            env_state: Current environment state containing agent positions and target information
+
+        Returns:
+            list: Expert action indices for both agents [agent1_action, agent2_action]
+        """
         agent_positions = env_state.agent_positions
         target_position = env_state.target.position
         agent1_deployed = env_state.agent1_deployed
@@ -31,7 +53,7 @@ class PathfindingFlowExpertSystem:
                     agent_positions[0], target_position, aggressive=True
                 )
                 actions[0] = action1
-            except:
+            except Exception:
                 actions[0] = 4
 
         # Agent 2: Strategic interception when deployed
@@ -64,13 +86,25 @@ class PathfindingFlowExpertSystem:
                     )
 
                 actions[1] = action2
-            except:
+            except Exception:
                 actions[1] = 4
 
         return actions
 
     def calculate_flanking_position(self, agent_positions, target_position):
-        """Calculate optimal flanking position for agent 2"""
+        """
+        Calculate optimal flanking position for agent coordination.
+
+        This method computes a strategic flanking position to avoid agent clustering
+        and improve capture probability through coordinated positioning.
+
+        Args:
+            agent_positions (list): Current positions of both agents
+            target_position (tuple): Current target position
+
+        Returns:
+            tuple: Optimal flanking position coordinates (x, y)
+        """
         agent1_pos = agent_positions[0]
         target_pos = target_position
 
@@ -101,7 +135,21 @@ class PathfindingFlowExpertSystem:
     def generate_pursuit_action(
         self, agent_pos, target_pos, aggressive=False, use_smooth=True
     ):
-        """Improved pursuit action generation"""
+        """
+        Generate optimal pursuit action using pathfinding algorithms.
+
+        This method combines A* pathfinding with smooth trajectory generation
+        to produce natural and effective pursuit behaviors.
+
+        Args:
+            agent_pos (tuple): Current agent position
+            target_pos (tuple): Target position to pursue
+            aggressive (bool): Whether to use more aggressive pursuit strategy
+            use_smooth (bool): Whether to apply trajectory smoothing
+
+        Returns:
+            int: Action index for optimal pursuit movement
+        """
         # Find path from agent to target
         path = self.pathfinder.find_path(agent_pos, target_pos)
 
@@ -121,7 +169,7 @@ class PathfindingFlowExpertSystem:
                     next_pos = smooth_path[next_idx]
                 else:
                     next_pos = path[1]
-            except:
+            except Exception:
                 next_pos = path[1]
         else:
             # If aggressive, skip one step in the path
@@ -131,7 +179,20 @@ class PathfindingFlowExpertSystem:
         return self.position_to_action(agent_pos, next_pos)
 
     def direct_movement_action(self, agent_pos, target_pos, aggressive=False):
-        """Generate direct movement toward target when no path available"""
+        """
+        Generate direct movement toward target when pathfinding is unavailable.
+
+        This fallback method provides direct movement calculations when A* pathfinding
+        fails or is not applicable for the current scenario.
+
+        Args:
+            agent_pos (tuple): Current agent position
+            target_pos (tuple): Target position
+            aggressive (bool): Whether to scale movement for aggressive pursuit
+
+        Returns:
+            int: Action index for direct movement toward target
+        """
         dx = target_pos[0] - agent_pos[0]
         dy = target_pos[1] - agent_pos[1]
 
@@ -169,7 +230,20 @@ class PathfindingFlowExpertSystem:
     def predict_interception_point(
         self, agent_positions, target_position, target_history
     ):
-        """Predict good interception point based on target movement"""
+        """
+        Predict optimal interception point based on target movement patterns.
+
+        This method analyzes target movement history to predict future positions
+        and calculate strategic interception points for coordinated capture.
+
+        Args:
+            agent_positions (list): Current positions of both agents
+            target_position (tuple): Current target position
+            target_history (list): Historical target positions for movement prediction
+
+        Returns:
+            tuple: Predicted interception coordinates (x, y)
+        """
         if len(target_history) < 3:
             # If no history, try to position opposite to agent 1
             agent1_pos = agent_positions[0]
@@ -207,7 +281,19 @@ class PathfindingFlowExpertSystem:
             return target_position
 
     def position_to_action(self, current_pos, next_pos):
-        """Convert position difference to discrete action"""
+        """
+        Convert position difference to discrete action index.
+
+        Maps continuous position changes to discrete directional actions
+        using angle-based direction mapping for consistent movement control.
+
+        Args:
+            current_pos (tuple): Current agent position
+            next_pos (tuple): Target position for next step
+
+        Returns:
+            int: Discrete action index (0-7 for directions, 4 for stay)
+        """
         dx = next_pos[0] - current_pos[0]
         dy = next_pos[1] - current_pos[1]
 
@@ -237,7 +323,18 @@ class PathfindingFlowExpertSystem:
             return 3  # SE
 
     def generate_demonstration_episode(self, max_steps=500):
-        """Generate complete expert demonstration following pathfinding flow"""
+        """
+        Generate complete expert demonstration episode following pathfinding flow.
+
+        This method creates a full episode demonstration using expert pathfinding
+        strategies, providing high-quality training data for imitation learning.
+
+        Args:
+            max_steps (int): Maximum number of steps for the demonstration episode
+
+        Returns:
+            dict: Complete episode data with states, actions, rewards, and transitions
+        """
         # Create fresh environment
         env = PursuitEnvironment(self.env.width, self.env.height)
         global_state, individual_obs = env.reset()

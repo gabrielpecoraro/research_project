@@ -359,7 +359,7 @@ class HybridQMIX(QMIX):
         super().__init__(**kwargs)
         # Only Agent 2 has a trainable network
         self.learning_agents = [False, True]  # Agent 1 deterministic, Agent 2 learns
-        print("🔧 Hybrid QMIX initialized: Agent 1 (A*), Agent 2 (Learning)")
+        print(" Hybrid QMIX initialized: Agent 1 (A*), Agent 2 (Learning)")
 
     def get_actions(self, states, epsilon=None):
         """Get actions - Agent 1 uses A* (handled in environment), Agent 2 learns"""

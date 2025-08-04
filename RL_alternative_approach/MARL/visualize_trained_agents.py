@@ -19,7 +19,7 @@ class TrainedAgentVisualizer:
         Args:
             model_path: Path to trained QMIX model
         """
-        print("🎯 Initializing Trained Agent Visualizer")
+        print("Initializing Trained Agent Visualizer")
 
         # Load environments
         self.environments = create_test_environments()
@@ -47,7 +47,7 @@ class TrainedAgentVisualizer:
         if model_path:
             self.load_trained_model(model_path)
         else:
-            print("⚠️ No model provided - will use random actions")
+            print("No model provided - will use random actions")
 
         # Setup visualization
         self.setup_visualization()
@@ -69,10 +69,10 @@ class TrainedAgentVisualizer:
             )
             self.trained_agent.load(model_path)
             self.trained_agent.epsilon = 0.0  # No exploration for evaluation
-            print(f"✅ Loaded trained model from {model_path}")
+            print(f"Loaded trained model from {model_path}")
 
         except Exception as e:
-            print(f"❌ Failed to load model: {e}")
+            print(f"Failed to load model: {e}")
             self.trained_agent = None
 
     def setup_visualization(self):
@@ -206,11 +206,11 @@ class TrainedAgentVisualizer:
     def single_step(self, event=None):
         """Execute a single step"""
         if self.current_step >= self.max_steps:
-            print("📊 Episode completed")
+            print("Episode completed")
             return
 
         # Get current state - FIX: Remove print statement
-        global_state, individual_obs = (
+        _, individual_obs = (
             self.current_env._get_global_state(),
             self.current_env._get_individual_observations(),
         )
@@ -255,7 +255,7 @@ class TrainedAgentVisualizer:
         if done or self.current_step >= self.max_steps:
             self.is_running = False
             captured = info.get("captured", False)
-            print(f"\n🏁 Episode finished! Captured: {captured}")
+            print(f"\n Episode finished! Captured: {captured}")
             self.episode_history.append(self.current_episode_data.copy())
 
     def update_display(self):
@@ -398,19 +398,19 @@ class TrainedAgentVisualizer:
             else {}
         )
 
-        metrics_text = f"""📊 Episode Metrics:
+        metrics_text = f""" Episode Metrics:
         
 Step: {self.current_step}
 Total Reward: {total_reward:.2f}
 Phase: {current_info.get("phase", "unknown").upper()}
 Training: {current_info.get("training_phase", False)}
 
-🤖 Agent Status:
+Agent Status:
 Agent 1: {"A* Deployed" if current_info.get("agent1_deployed", False) else "Waiting"}
 Agent 2: {"MARL Learning" if current_info.get("agent2_deployed", False) else "Waiting"}
 Pursuit: {"Active" if current_info.get("pursuit_active", False) else "Inactive"}
 
-📈 Performance:
+Performance:
 Episodes Completed: {len(self.episode_history)}
 Model: {"Trained QMIX" if self.trained_agent else "Random Actions"}
 Capture: {current_info.get("captured", False)}
@@ -502,13 +502,13 @@ Capture: {current_info.get("captured", False)}
     def reset_episode(self, event):
         """Reset the current episode"""
         self.reset_current_environment()
-        print("🔄 Episode reset")
+        print("Episode reset")
 
     def next_environment(self, event):
         """Switch to next environment"""
         self.current_env_idx = (self.current_env_idx + 1) % len(self.environments)
         self.reset_current_environment()
-        print(f"🔄 Switched to environment {self.current_env_idx + 1}")
+        print(f" Switched to environment {self.current_env_idx + 1}")
 
     def change_environment(self, val):
         """Change environment via slider"""
@@ -524,7 +524,7 @@ Capture: {current_info.get("captured", False)}
     def analyze_performance(self, event):
         """Analyze agent performance across episodes"""
         if len(self.episode_history) == 0:
-            print("⚠️ No completed episodes to analyze")
+            print("No completed episodes to analyze")
             return
 
         self.show_performance_analysis()
@@ -574,18 +574,18 @@ Capture: {current_info.get("captured", False)}
         avg_length = np.mean(episode_lengths)
         final_capture_rate = capture_rate[-1] if len(capture_rate) > 0 else 0
 
-        summary_text = f"""📊 Performance Summary:
+        summary_text = f""" Performance Summary:
         
 Total Episodes: {len(self.episode_history)}
 Average Reward: {avg_reward:.2f}
 Average Length: {avg_length:.1f} steps
 Final Capture Rate: {final_capture_rate:.2%}
 
-🎯 Best Episode:
+ Best Episode:
 Reward: {max(episode_rewards):.2f}
 Shortest: {min(episode_lengths)} steps
 
-🤖 Agent Behavior:
+ Agent Behavior:
 Agent 1: A* Pathfinding
 Agent 2: MARL Coordination
 Model: {"Trained" if self.trained_agent else "Random"}
@@ -604,12 +604,12 @@ Model: {"Trained" if self.trained_agent else "Random"}
         plt.tight_layout()
         plt.show()
 
-        print(f"📈 Analysis complete - {len(self.episode_history)} episodes analyzed")
+        print(f" Analysis complete - {len(self.episode_history)} episodes analyzed")
 
     def save_episode(self, event):
         """Save current episode data"""
         if len(self.current_episode_data["rewards"]) == 0:
-            print("⚠️ No episode data to save")
+            print(" No episode data to save")
             return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -634,13 +634,13 @@ Model: {"Trained" if self.trained_agent else "Random"}
                     },
                     f,
                 )
-            print(f"💾 Episode saved to {filename}")
+            print(f" Episode saved to {filename}")
         except Exception as e:
-            print(f"❌ Failed to save episode: {e}")
+            print(f" Failed to save episode: {e}")
 
     def show(self):
         """Show the visualization interface"""
-        print("\n🎮 Visualization Controls:")
+        print("\nVisualization Controls:")
         print("  • Start/Stop: Run simulation automatically")
         print("  • Pause/Resume: Pause/resume automatic simulation")
         print("  • Step: Execute single step manually")
@@ -656,7 +656,7 @@ Model: {"Trained" if self.trained_agent else "Random"}
 
 def main():
     """Main function to run the visualization"""
-    print("🎯 QMIX Hybrid Agent Visualization Tool")
+    print(" QMIX Hybrid Agent Visualization Tool")
     print("=" * 50)
 
     # Ask for model path
@@ -665,24 +665,24 @@ def main():
     ).strip()
     if not model_path:
         model_path = None
-        print("🎲 Running with random actions for demonstration")
+        print(" Running with random actions for demonstration")
     else:
-        print(f"📂 Loading model from: {model_path}")
+        print(f" Loading model from: {model_path}")
 
     try:
         # Create visualizer
         visualizer = TrainedAgentVisualizer(model_path)
 
-        print("\n🎮 Visualization ready!")
+        print("\n Visualization ready!")
         print("Close the window to exit.")
 
         # Show the visualization
         visualizer.show()
 
     except KeyboardInterrupt:
-        print("\n👋 Exiting visualization...")
+        print("\n Exiting visualization...")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f" Error: {e}")
         import traceback
 
         traceback.print_exc()
