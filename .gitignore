@@ -11,5 +11,5 @@ Notes/
 
 *.pth
 *.pkl
-
+*.pt
 */training_logs

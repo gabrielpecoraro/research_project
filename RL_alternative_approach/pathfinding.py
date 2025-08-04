@@ -1363,12 +1363,12 @@ def animate_multi_agent_pursuit(
     return ani
 
 
-def create_sample_neighborhood(width=50, height=50):
+def create_sample_neighborhood(width=20, height=20):
     env = Environment(width, height)
 
     # Scale up the existing obstacles proportionally
     # Original blocks scaled from 20x20 to 50x50 (2.5x scale factor)
-    scale = 2.5
+    scale = 1.2
 
     # Add scaled blocks as obstacles
     env.add_block(0.5 * scale, 2 * scale, 7 * scale, 5 * scale)
@@ -1382,7 +1382,7 @@ def create_sample_neighborhood(width=50, height=50):
     env.add_block(14 * scale, 14 * scale, 5 * scale, 5 * scale)
     env.add_block(6.5 * scale, 15 * scale, 6 * scale, 6 * scale)
 
-    # Add additional buildings to fill the larger space
+    """# Add additional buildings to fill the larger space
     env.add_block(25, 5, 8, 6)
     env.add_block(35, 5, 8, 6)
     env.add_block(25, 15, 8, 6)
@@ -1394,7 +1394,7 @@ def create_sample_neighborhood(width=50, height=50):
     env.add_block(5, 30, 10, 8)
     env.add_block(15, 40, 12, 7)
     env.add_block(30, 40, 10, 8)
-    env.add_block(42, 30, 6, 12)
+    env.add_block(42, 30, 6, 12)"""
 
     return env
 
@@ -1403,7 +1403,7 @@ def create_sample_neighborhood(width=50, height=50):
 def main():
     env = create_sample_neighborhood()
     start = (0.5, 0.5)
-    target_position = (33, 33)
+    target_position = (9.5, 9.5)
     pathfinder = AStar(env)
 
     try:

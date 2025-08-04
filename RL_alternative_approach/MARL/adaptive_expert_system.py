@@ -3,9 +3,11 @@ import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)) + "/..")
 
-from pathfinding import animate_multi_agent_pursuit, AStar, VehicleTarget
+from pathfinding_marl import (
+    AStar,
+    VehicleTarget,
+)
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 class AdaptivePathfindingExpert:
@@ -18,7 +20,7 @@ class AdaptivePathfindingExpert:
         Run the pathfinding algorithm on the exact current scenario
         and extract the action sequence as expert demonstration
         """
-        print(f"🔄 Generating pathfinding demonstration for struggling scenario...")
+        print("Generating pathfinding demonstration for struggling scenario...")
 
         # Create a copy of the environment in the exact same state
         demo_env = self._create_demo_environment(scenario_config)
@@ -26,7 +28,7 @@ class AdaptivePathfindingExpert:
         # Run pathfinding simulation
         demonstration = self._run_pathfinding_simulation(demo_env, scenario_config)
 
-        print(f"✅ Generated {len(demonstration['actions'])} expert action steps")
+        print(f"xsGenerated {len(demonstration['actions'])} expert action steps")
         return demonstration
 
     def _create_demo_environment(self, scenario_config):
@@ -130,7 +132,7 @@ class AdaptivePathfindingExpert:
                     actions[0] = self._direct_movement_action(
                         env.agent_positions[0], env.target.position
                     )
-            except:
+            except Exception:
                 actions[0] = 4
 
         # Agent 2: Interception when deployed (exactly like your animation)
@@ -152,7 +154,7 @@ class AdaptivePathfindingExpert:
                     actions[1] = self._direct_movement_action(
                         env.agent_positions[1], intercept_point
                     )
-            except:
+            except Exception:
                 actions[1] = 4
 
         return actions

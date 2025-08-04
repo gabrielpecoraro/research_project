@@ -1,6 +1,10 @@
 import numpy as np
 import random
-from pathfinding import AStar, smooth_path_with_bezier, VehicleTarget
+from RL_alternative_approach.MARL.pathfinding_marl import (
+    AStar,
+    smooth_path_with_bezier,
+    VehicleTarget,
+)
 from pursuit_environment import PursuitEnvironment
 
 

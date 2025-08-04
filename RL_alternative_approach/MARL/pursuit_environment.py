@@ -1,6 +1,6 @@
 import numpy as np
 import random
-from pathfinding import Environment, VehicleTarget
+from pathfinding_marl import Environment
 
 
 class PursuitEnvironment:
@@ -280,621 +280,607 @@ class PursuitEnvironment:
         return positions
 
     def reset(self):
-        """Reset environment for new episode with fixed agent positions"""
-        # Both agents ALWAYS start at (0.5, 0.5) - matching your pathfinding flow
+        """Reset environment for hybrid training"""
+        print(f"\n🔄 ENVIRONMENT RESET")
+
+        # Reset positions
         self.agent_positions = [(0.5, 0.5), (0.5, 0.5)]
 
-        # Get random valid position for target only
+        # Reset deployment status
+        self.agent1_deployed = False
+        self.agent2_deployed = False
+        self.pursuit_active = False
+
+        # Reset timing
+        self.agent1_deploy_step = -1
+        self.agent2_deploy_step = -1
+
+        # Create new target
         target_pos = self._get_random_valid_target_position()
 
-        # Target speed scaled to environment size (matching your pathfinding speeds)
-        target_speed = min(0.5, max(0.2, self.width / 100.0))
-        self.target = VehicleTarget(
-            self.env, target_pos, speed=target_speed, inertia=0.8
-        )
+        # Create target with proper fallback
+        try:
+            from pathfinding_marl import VehicleTarget
+
+            self.target = VehicleTarget(self.env, target_pos, speed=0.5, inertia=0.8)
+        except ImportError:
+            try:
+                from pathfinding import VehicleTarget
+
+                self.target = VehicleTarget(
+                    self.env, target_pos, speed=0.5, inertia=0.8
+                )
+            except ImportError:
+                # Fallback: create a simple target
+                class SimpleTarget:
+                    def __init__(self, env, position, speed=0.5):
+                        self.env = env
+                        self.position = position
+                        self.speed = speed
+
+                    def update_position(self, agent_position):
+                        """Simple fleeing behavior"""
+                        current_pos = np.array(self.position)
+                        agent_pos = np.array(agent_position)
+
+                        # Move away from agent
+                        direction = current_pos - agent_pos
+                        distance = np.linalg.norm(direction)
+
+                        if distance > 0:
+                            direction = direction / distance
+                            new_pos = current_pos + direction * self.speed
+
+                            # Keep within bounds
+                            new_pos[0] = np.clip(new_pos[0], 1.0, self.env.width - 1.0)
+                            new_pos[1] = np.clip(new_pos[1], 1.0, self.env.height - 1.0)
+
+                            # Check if position is valid
+                            if self.env.is_valid_position(new_pos[0], new_pos[1]):
+                                self.position = tuple(new_pos)
+
+                self.target = SimpleTarget(self.env, target_pos, speed=0.5)
 
         self.target_history = [self.target.position]
         self.step_count = 0
 
-        # Initialize deployment timing (matching your pathfinding flow)
-        self.agent1_deployed = False
-        self.agent2_deployed = False
-        self.pursuit_active = False
-        self.agent1_deploy_step = 30  # Agent 1 deploys after 30 steps
-        self.agent2_deploy_step = 130  # Agent 2 deploys after 130 steps (30 + 100)
+        print(f"🎯 Target at: {self.target.position}")
+        print(f"🤖 Agents start at: {self.agent_positions}")
+        print(f"📋 Hybrid training ready:")
+        print(f"   Steps 1-20: Agent 1 uses A* pathfinding")
+        print(f"   Steps 21+: Agent 1 (A*) + Agent 2 (MARL coordination)")
 
-        return self._get_state()
+        return self._get_global_state(), self._get_individual_observations()
 
     def step(self, actions):
-        """Take a step in the environment following the pathfinding flow"""
+        """HYBRID APPROACH: Agent 1 uses A*, Agent 2 learns coordination"""
         self.step_count += 1
 
-        # Handle agent deployment timing (matching your pathfinding flow)
-        if self.step_count >= self.agent1_deploy_step and not self.agent1_deployed:
-            self.agent1_deployed = True
-            print(f"Agent 1 deployed at step {self.step_count}")
-
-        # Check if target starts fleeing (when agent 1 gets close)
-        if self.agent1_deployed and not self.pursuit_active:
-            distance_to_target = np.sqrt(
-                (self.agent_positions[0][0] - self.target.position[0]) ** 2
-                + (self.agent_positions[0][1] - self.target.position[1]) ** 2
-            )
-            if (
-                distance_to_target < 3.0
-            ):  # Target starts fleeing when agent 1 gets close
+        # Phase 1: Agent 1 pathfinding (Steps 1-20) - Agent 1 uses A* pathfinding
+        if self.step_count <= 20:
+            # Deploy Agent 1 immediately on first step
+            if not self.agent1_deployed:
+                self.agent1_deployed = True
+                self.agent1_deploy_step = self.step_count
                 self.pursuit_active = True
-                print(f"Target starts fleeing at step {self.step_count}")
+                print(
+                    f"🚀 Agent 1 deployed with A* pathfinding at step {self.step_count}"
+                )
 
-        # Deploy agent 2 when pursuit is active and timing is right
-        if (
-            self.pursuit_active
-            and self.step_count >= self.agent2_deploy_step
-            and not self.agent2_deployed
-        ):
-            self.agent2_deployed = True
-            print(f"Agent 2 deployed for interception at step {self.step_count}")
+            # Agent 1 uses deterministic A* pathfinding (NO LEARNING)
+            self._move_agent1_with_astar()
 
-        # Apply actions based on deployment status
-        if self.agent1_deployed:
-            # Agent 1 is deployed and can move
-            self._apply_action(0, actions[0])
-        # Agent 1 stays at (0.5, 0.5) until deployed
+            # Target flees from Agent 1 - FIX: Use update_position instead of move
+            if len(self.agent_positions) > 0:
+                self.target.update_position(self.agent_positions[0])
 
-        if self.agent2_deployed:
-            # Agent 2 is deployed and can move
-            self._apply_action(1, actions[1])
-        # Agent 2 stays at (0.5, 0.5) until deployed
+            training_phase = False
+            reward = 0.0
 
-        # Update target behavior based on pursuit status
-        if self.pursuit_active:
-            # Target flees from the closest deployed agent
-            closest_agent_pos = self._get_closest_deployed_agent_position()
-            if closest_agent_pos is not None:
+        # Phase 2: Hybrid coordination (Steps 21+) - Agent 1 continues A*, Agent 2 learns
+        else:
+            # Deploy Agent 2 for learned interception
+            if not self.agent2_deployed:
+                self.agent2_deployed = True
+                self.agent2_deploy_step = self.step_count
+                print(
+                    f"🤖 Agent 2 deployed for LEARNED interception at step {self.step_count}"
+                )
+                print(f"🎮 HYBRID COORDINATION: Agent 1 (A*) + Agent 2 (MARL)")
+
+            # Agent 1 continues using deterministic A* pathfinding
+            self._move_agent1_with_astar()
+
+            # Agent 2 uses LEARNED action from QMIX (ONLY Agent 2 trains)
+            if len(actions) > 1:
+                agent2_action = actions[1]
+                self._apply_action_with_smoothing(1, agent2_action)
+
+            # Target flees from both agents - FIX: Use update_position with closest agent
+            if len(self.agent_positions) >= 2:
+                # Find closest agent to target for fleeing behavior
+                target_pos = np.array(self.target.position)
+                agent1_pos = np.array(self.agent_positions[0])
+                agent2_pos = np.array(self.agent_positions[1])
+
+                dist1 = np.linalg.norm(agent1_pos - target_pos)
+                dist2 = np.linalg.norm(agent2_pos - target_pos)
+
+                # Target flees from closest agent
+                closest_agent_pos = (
+                    self.agent_positions[0]
+                    if dist1 < dist2
+                    else self.agent_positions[1]
+                )
                 self.target.update_position(closest_agent_pos)
-        # Target stays stationary until pursuit begins
+            elif len(self.agent_positions) >= 1:
+                self.target.update_position(self.agent_positions[0])
 
-        # Update target history
-        self.target_history.append(self.target.position)
-        if len(self.target_history) > 50:  # Keep only recent history
-            self.target_history = self.target_history[-50:]
+            # This is the training phase - but ONLY for Agent 2
+            training_phase = True
+            reward = self._calculate_interception_reward()
 
-        # Calculate reward
-        reward = self._calculate_reward()
-
-        # Check if episode is done
+        # Check if done
         done = self._check_done()
 
-        # Additional info
+        # Track target history
+        self.target_history.append(self.target.position)
+
+        # Create info dict with hybrid training information
         info = {
-            "captured": done and self._is_target_captured(),
+            "captured": self._is_target_captured(),
             "agent1_deployed": self.agent1_deployed,
             "agent2_deployed": self.agent2_deployed,
             "pursuit_active": self.pursuit_active,
-            "step": self.step_count,
+            "agent1_deploy_step": self.agent1_deploy_step,
+            "agent2_deploy_step": self.agent2_deploy_step,
+            "step_count": self.step_count,
+            "training_phase": training_phase,
+            "agent1_learning": False,  # Agent 1 never learns (uses A*)
+            "agent2_learning": training_phase,  # Only Agent 2 learns
+            "phase": self._get_current_phase(),
+            "coordination_difficulty": self._get_coordination_difficulty(),
         }
 
-        return self._get_state(), reward, done, info
-
-    def _get_closest_deployed_agent_position(self):
-        """Get position of closest deployed agent to target"""
-        deployed_agents = []
-
-        if self.agent1_deployed:
-            deployed_agents.append(self.agent_positions[0])
-        if self.agent2_deployed:
-            deployed_agents.append(self.agent_positions[1])
-
-        if not deployed_agents:
-            return None
-
-        # Find closest deployed agent
-        distances = [
-            np.sqrt(
-                (pos[0] - self.target.position[0]) ** 2
-                + (pos[1] - self.target.position[1]) ** 2
-            )
-            for pos in deployed_agents
-        ]
-
-        closest_idx = np.argmin(distances)
-        return deployed_agents[closest_idx]
-
-    def _calculate_reward(self):
-        """Enhanced reward structure for better coordination learning"""
-        reward = 0.0
-
-        if not self.agent1_deployed:
-            return -0.01
-
-        # Calculate distances
-        dist1 = np.sqrt(
-            (self.agent_positions[0][0] - self.target.position[0]) ** 2
-            + (self.agent_positions[0][1] - self.target.position[1]) ** 2
+        return (
+            (self._get_global_state(), self._get_individual_observations()),
+            reward,
+            done,
+            info,
         )
 
-        max_distance = np.sqrt(self.width**2 + self.height**2)
-        normalized_dist1 = dist1 / max_distance
+    def _move_agent1_with_astar(self):
+        """Agent 1 uses deterministic A* pathfinding (NO LEARNING)"""
+        try:
+            from pathfinding_marl import AStar
 
-        # Progressive proximity rewards with higher bonuses
-        if dist1 <= 1.0:
-            reward += 15.0  # Very close (increased)
-        elif dist1 <= 1.5:
-            reward += 12.0  # Close (increased)
-        elif dist1 <= 2.5:
-            reward += 8.0  # Approaching (increased)
-        elif dist1 <= 4.0:
-            reward += 4.0  # Getting closer (increased)
+            # Create pathfinder
+            pathfinder = AStar(self.env)
 
-        # Base distance reward
-        reward += (1.0 - normalized_dist1) * 5.0  # Increased
+            # Find path from current position to target
+            start = self.agent_positions[0]
+            goal = self.target.position
 
-        # Two-agent coordination with enhanced teamwork
-        if self.agent2_deployed:
-            dist2 = np.sqrt(
-                (self.agent_positions[1][0] - self.target.position[0]) ** 2
-                + (self.agent_positions[1][1] - self.target.position[1]) ** 2
-            )
+            path = pathfinder.find_path(start, goal)
 
-            normalized_dist2 = dist2 / max_distance
+            if path and len(path) > 1:
+                # Move to next position in path
+                next_pos = path[1]
 
-            # Progressive proximity rewards for agent 2
-            if dist2 <= 1.0:
-                reward += 15.0
-            elif dist2 <= 1.5:
-                reward += 12.0
-            elif dist2 <= 2.5:
-                reward += 8.0
-            elif dist2 <= 4.0:
-                reward += 4.0
-
-            reward += (1.0 - normalized_dist2) * 5.0
-
-            # ENHANCED COORDINATION BONUSES
-            # 1. Both agents in capture zone
-            if dist1 <= 3.0 and dist2 <= 3.0:
-                reward += 12.0  # Increased teamwork bonus
-
-                # 2. Pincer movement bonus (agents on opposite sides)
-                target_pos = np.array(self.target.position)
-                agent1_vec = np.array(self.agent_positions[0]) - target_pos
-                agent2_vec = np.array(self.agent_positions[1]) - target_pos
-
-                if np.linalg.norm(agent1_vec) > 0 and np.linalg.norm(agent2_vec) > 0:
-                    agent1_vec_norm = agent1_vec / np.linalg.norm(agent1_vec)
-                    agent2_vec_norm = agent2_vec / np.linalg.norm(agent2_vec)
-
-                    dot_product = np.dot(agent1_vec_norm, agent2_vec_norm)
-                    # Reward when agents are on opposite sides (dot product < 0)
-                    if dot_product < -0.3:  # Agents are more opposite
-                        coordination_bonus = (1.0 + abs(dot_product)) * 8.0  # Increased
-                        reward += coordination_bonus
-
-                # 3. Optimal distance between agents
-                agent_distance = np.sqrt(
-                    (self.agent_positions[0][0] - self.agent_positions[1][0]) ** 2
-                    + (self.agent_positions[0][1] - self.agent_positions[1][1]) ** 2
-                )
-                optimal_distance = 3.0  # Ideal distance between agents
-                distance_bonus = max(0, 5.0 - abs(agent_distance - optimal_distance))
-                reward += distance_bonus
-
-            # 4. Escape route reduction bonus
-            escape_routes = self._count_target_escape_routes()
-            if escape_routes <= 4:
-                reward += (
-                    5 - escape_routes
-                ) * 3.0  # More reward for fewer escape routes
-
-            # 5. Speed coordination bonus (both agents moving toward target)
-            if self._are_both_agents_advancing():
-                reward += 5.0
-
-        # MASSIVE capture reward with difficulty scaling
-        if self._is_target_captured():
-            capture_bonus = 200.0  # Increased from 150
-
-            # Bonus for early capture
-            if self.step_count < 200:
-                capture_bonus += 50.0
-            elif self.step_count < 300:
-                capture_bonus += 25.0
-
-            reward += capture_bonus
-
-        # Deployment timing rewards
-        if self.step_count == self.agent1_deploy_step and self.agent1_deployed:
-            reward += 8.0  # Increased
-        if self.step_count == self.agent2_deploy_step and self.agent2_deployed:
-            reward += 8.0  # Increased
-
-        # Reduced time penalty
-        reward -= 0.01  # Reduced penalty
-
-        return reward
-
-    def _count_target_escape_routes(self):
-        """Count available escape routes for target"""
-        escape_routes = 0
-
-        for angle in np.linspace(0, 2 * np.pi, 8, endpoint=False):
-            dx = np.cos(angle) * 2.0
-            dy = np.sin(angle) * 2.0
-
-            escape_x = self.target.position[0] + dx
-            escape_y = self.target.position[1] + dy
-
-            if self.env.is_valid_position(escape_x, escape_y):
-                # Check if this escape leads away from both agents
-                if self.agent2_deployed:
-                    escape_dist1 = np.sqrt(
-                        (escape_x - self.agent_positions[0][0]) ** 2
-                        + (escape_y - self.agent_positions[0][1]) ** 2
-                    )
-                    escape_dist2 = np.sqrt(
-                        (escape_x - self.agent_positions[1][0]) ** 2
-                        + (escape_y - self.agent_positions[1][1]) ** 2
-                    )
-
-                    curr_dist1 = np.sqrt(
-                        (self.agent_positions[0][0] - self.target.position[0]) ** 2
-                        + (self.agent_positions[0][1] - self.target.position[1]) ** 2
-                    )
-                    curr_dist2 = np.sqrt(
-                        (self.agent_positions[1][0] - self.target.position[0]) ** 2
-                        + (self.agent_positions[1][1] - self.target.position[1]) ** 2
-                    )
-
-                    if (
-                        escape_dist1 > curr_dist1 * 1.2
-                        and escape_dist2 > curr_dist2 * 1.2
-                    ):
-                        escape_routes += 1
+                # Validate and apply movement with Bezier smoothing
+                if (
+                    0 <= next_pos[0] <= self.width
+                    and 0 <= next_pos[1] <= self.height
+                    and self.env.is_valid_position(next_pos[0], next_pos[1])
+                ):
+                    self._smooth_agent_movement(0, next_pos)
                 else:
-                    escape_routes += 1
-
-        return escape_routes
-
-    def _are_both_agents_advancing(self):
-        """Check if both agents are moving toward the target"""
-        if not hasattr(self, "prev_distances"):
-            return False
-
-        if not self.agent2_deployed:
-            return False
-
-        # Current distances
-        curr_dist1 = np.sqrt(
-            (self.agent_positions[0][0] - self.target.position[0]) ** 2
-            + (self.agent_positions[0][1] - self.target.position[1]) ** 2
-        )
-        curr_dist2 = np.sqrt(
-            (self.agent_positions[1][0] - self.target.position[0]) ** 2
-            + (self.agent_positions[1][1] - self.target.position[1]) ** 2
-        )
-
-        # Check if both are getting closer
-        advancing = (
-            curr_dist1 < self.prev_distances[0] and curr_dist2 < self.prev_distances[1]
-        )
-
-        # Update previous distances
-        self.prev_distances = [curr_dist1, curr_dist2]
-
-        return advancing
-
-    def _is_target_captured(self):
-        """Adaptive capture conditions based on training mode"""
-        if self.training_mode:
-            return self._is_target_captured_training()
-        else:
-            return self._is_target_captured_strict()
-
-    def _is_target_captured_training(self):
-        """Lenient capture for training"""
-        # Use the lenient conditions from above
-        if not self.agent1_deployed:
-            return False
-
-        # Calculate distances
-        dist1 = np.sqrt(
-            (self.agent_positions[0][0] - self.target.position[0]) ** 2
-            + (self.agent_positions[0][1] - self.target.position[1]) ** 2
-        )
-
-        # Single agent capture (close proximity)
-        if dist1 <= 1.5:  # Increased from 1.0
-            return True
-
-        # Two-agent coordination capture
-        if self.agent2_deployed:
-            dist2 = np.sqrt(
-                (self.agent_positions[1][0] - self.target.position[0]) ** 2
-                + (self.agent_positions[1][1] - self.target.position[1]) ** 2
-            )
-
-            # Both agents reasonably close (increased capture area)
-            if dist1 <= 2.5 and dist2 <= 2.5:  # Increased from 2.0
-                # Count available escape routes (more lenient)
-                escape_routes = 0
-
-                # Test 8 directions (reduced from 32 for performance)
-                for angle in np.linspace(0, 2 * np.pi, 8, endpoint=False):
-                    dx = np.cos(angle) * 2.0  # Reduced escape distance requirement
-                    dy = np.sin(angle) * 2.0
-
-                    escape_x = self.target.position[0] + dx
-                    escape_y = self.target.position[1] + dy
-
-                    if self.env.is_valid_position(escape_x, escape_y):
-                        # Check if this escape leads away from agents (more lenient)
-                        escape_dist1 = np.sqrt(
-                            (escape_x - self.agent_positions[0][0]) ** 2
-                            + (escape_y - self.agent_positions[0][1]) ** 2
-                        )
-                        escape_dist2 = np.sqrt(
-                            (escape_x - self.agent_positions[1][0]) ** 2
-                            + (escape_y - self.agent_positions[1][1]) ** 2
-                        )
-
-                        # More lenient escape criteria (1.3x instead of 2.0x)
-                        if escape_dist1 > dist1 * 1.3 or escape_dist2 > dist2 * 1.3:
-                            escape_routes += 1
-
-                # Captured if limited escape routes (more lenient)
-                if escape_routes <= 3:  # Increased from 2
-                    return True
-
-            # Additional teamwork capture: both agents very close
-            if dist1 <= 1.8 and dist2 <= 1.8:  # New condition
-                return True
-
-        return False
-
-    def _is_target_captured_strict(self):
-        """Strict capture for final evaluation (like your pathfinding animation)"""
-        if not self.agent1_deployed:
-            return False
-
-        # Calculate distances
-        dist1 = np.sqrt(
-            (self.agent_positions[0][0] - self.target.position[0]) ** 2
-            + (self.agent_positions[0][1] - self.target.position[1]) ** 2
-        )
-
-        # Single agent capture (close proximity)
-        if dist1 <= 1.0:
-            return True
-
-        # Two-agent coordination capture
-        if self.agent2_deployed:
-            dist2 = np.sqrt(
-                (self.agent_positions[1][0] - self.target.position[0]) ** 2
-                + (self.agent_positions[1][1] - self.target.position[1]) ** 2
-            )
-
-            # Both agents reasonably close
-            if dist1 <= 2.0 and dist2 <= 2.0:
-                # Count available escape routes
-                escape_routes = 0
-
-                # Test 32 directions
-                for angle in np.linspace(0, 2 * np.pi, 32, endpoint=False):
-                    dx = np.cos(angle) * 3.0
-                    dy = np.sin(angle) * 3.0
-
-                    escape_x = self.target.position[0] + dx
-                    escape_y = self.target.position[1] + dy
-
-                    if self.env.is_valid_position(escape_x, escape_y):
-                        # Check if this escape leads away from agents
-                        escape_dist1 = np.sqrt(
-                            (escape_x - self.agent_positions[0][0]) ** 2
-                            + (escape_y - self.agent_positions[0][1]) ** 2
-                        )
-                        escape_dist2 = np.sqrt(
-                            (escape_x - self.agent_positions[1][0]) ** 2
-                            + (escape_y - self.agent_positions[1][1]) ** 2
-                        )
-
-                        if escape_dist1 > dist1 * 2.0 or escape_dist2 > dist2 * 2.0:
-                            escape_routes += 1
-
-                # Captured if limited escape routes
-                if escape_routes <= 2:
-                    return True
-
-        return False
-
-    def _check_done(self):
-        """Check if episode should end"""
-        # Episode ends on capture
-        if self._is_target_captured():
-            return True
-
-        # Episode ends if too many steps
-        if self.step_count >= self.max_steps:
-            return True
-
-        # Episode ends if target escapes to edge
-        margin = 2.0
-        if (
-            self.target.position[0] < margin
-            or self.target.position[0] > self.width - margin
-            or self.target.position[1] < margin
-            or self.target.position[1] > self.height - margin
-        ):
-            return True
-
-        return False
-
-    def _get_state(self):
-        """Get current state representation"""
-        # Global state for mixing network
-        global_state = self._get_global_state()
-        # Individual observations for agent networks
-        individual_obs = self._get_individual_observations()
-
-        return global_state, individual_obs
-
-    def _get_global_state(self):
-        """Get global state representation"""
-        grid_size = 20
-        grid = np.zeros((grid_size, grid_size))
-
-        # Scale positions to grid
-        scale_x = grid_size / self.width
-        scale_y = grid_size / self.height
-
-        # Mark obstacles
-        for ox, oy, ow, oh in self.env.obstacles:
-            start_x = int(ox * scale_x)
-            start_y = int(oy * scale_y)
-            end_x = min(grid_size, int((ox + ow) * scale_x))
-            end_y = min(grid_size, int((oy + oh) * scale_y))
-
-            for x in range(start_x, end_x):
-                for y in range(start_y, end_y):
-                    if 0 <= x < grid_size and 0 <= y < grid_size:
-                        grid[y, x] = -1  # Obstacle marker
-
-        # Mark agents
-        for i, (ax, ay) in enumerate(self.agent_positions):
-            grid_x = int(ax * scale_x)
-            grid_y = int(ay * scale_y)
-            if 0 <= grid_x < grid_size and 0 <= grid_y < grid_size:
-                grid[grid_y, grid_x] = i + 1  # Agent markers
-
-        # Mark target
-        tx, ty = (
-            int(self.target.position[0] * scale_x),
-            int(self.target.position[1] * scale_y),
-        )
-        if 0 <= tx < grid_size and 0 <= ty < grid_size:
-            grid[ty, tx] = 9  # Target marker
-
-        # Additional global features
-        features = []
-
-        # Distances from agents to target
-        for agent_pos in self.agent_positions:
-            dist = np.sqrt(
-                (agent_pos[0] - self.target.position[0]) ** 2
-                + (agent_pos[1] - self.target.position[1]) ** 2
-            )
-            features.append(dist / max(self.width, self.height))  # Normalized
-
-        # Distance between agents
-        agent_dist = np.sqrt(
-            (self.agent_positions[0][0] - self.agent_positions[1][0]) ** 2
-            + (self.agent_positions[0][1] - self.agent_positions[1][1]) ** 2
-        )
-        features.append(agent_dist / max(self.width, self.height))  # Normalized
-
-        return np.concatenate([grid.flatten(), features])
-
-    def _get_individual_observations(self):
-        """Get individual agent observations"""
-        observations = []
-
-        for i, agent_pos in enumerate(self.agent_positions):
-            obs = []
-
-            # Agent's own position (normalized)
-            obs.extend([agent_pos[0] / self.width, agent_pos[1] / self.height])
-
-            # Target position relative to agent
-            rel_target_x = (self.target.position[0] - agent_pos[0]) / self.width
-            rel_target_y = (self.target.position[1] - agent_pos[1]) / self.height
-            obs.extend([rel_target_x, rel_target_y])
-
-            # Other agent's position relative to this agent
-            other_agent_idx = 1 - i
-            other_pos = self.agent_positions[other_agent_idx]
-            rel_other_x = (other_pos[0] - agent_pos[0]) / self.width
-            rel_other_y = (other_pos[1] - agent_pos[1]) / self.height
-            obs.extend([rel_other_x, rel_other_y])
-
-            # Distance to target
-            target_dist = np.sqrt(
-                (agent_pos[0] - self.target.position[0]) ** 2
-                + (agent_pos[1] - self.target.position[1]) ** 2
-            )
-            obs.append(target_dist / max(self.width, self.height))
-
-            # Local obstacle information (simplified)
-            local_obstacles = self._get_local_obstacles(agent_pos, radius=3.0)
-            obs.extend(local_obstacles)
-
-            observations.append(np.array(obs))
-
-        return observations
-
-    def _get_local_obstacles(self, agent_pos, radius=3.0):
-        """Get local obstacle information around agent"""
-        # Check 8 directions around agent
-        directions = [
-            (0, 1),
-            (1, 1),
-            (1, 0),
-            (1, -1),
-            (0, -1),
-            (-1, -1),
-            (-1, 0),
-            (-1, 1),
-        ]
-
-        obstacle_info = []
-        for dx, dy in directions:
-            # Check if there's an obstacle in this direction
-            check_x = agent_pos[0] + dx * radius
-            check_y = agent_pos[1] + dy * radius
-
-            if self.env.is_valid_position(check_x, check_y):
-                obstacle_info.append(0.0)  # No obstacle
+                    self._fallback_agent_movement(0)
             else:
-                obstacle_info.append(1.0)  # Obstacle present
+                self._fallback_agent_movement(0)
 
-        return obstacle_info
+        except Exception as e:
+            print(f"A* pathfinding failed: {e}, using fallback")
+            self._fallback_agent_movement(0)
 
-    def _apply_action(self, agent_idx, action):
-        """Apply action to specific agent"""
-        if agent_idx >= len(self.agent_positions):
-            return
+    def _smooth_agent_movement(self, agent_idx, target_pos):
+        """Apply Bezier smoothing to agent movement"""
+        try:
+            from pathfinding_marl import smooth_path_with_bezier
 
+            current_pos = self.agent_positions[agent_idx]
+
+            # Create mini-path for smoothing
+            mini_path = [current_pos, target_pos]
+
+            # Apply Bezier smoothing
+            smoothed_path = smooth_path_with_bezier(
+                mini_path, smoothing_factor=0.1, num_points=5
+            )
+
+            if len(smoothed_path) > 1:
+                # Move to next position in smoothed path
+                next_pos = smoothed_path[1]
+                self.agent_positions[agent_idx] = next_pos
+            else:
+                # Fallback to direct movement
+                self.agent_positions[agent_idx] = target_pos
+
+        except Exception as e:
+            print(f"Bezier smoothing failed: {e}, using direct movement")
+            self.agent_positions[agent_idx] = target_pos
+
+    def _fallback_agent_movement(self, agent_idx):
+        """Fallback movement when A* fails"""
+        current_pos = np.array(self.agent_positions[agent_idx])
+        target_pos = np.array(self.target.position)
+
+        # Move directly towards target
+        direction = target_pos - current_pos
+        distance = np.linalg.norm(direction)
+
+        if distance > 0:
+            # Normalize and apply speed
+            direction = direction / distance
+            speed = 0.8  # Agent 1 speed
+            new_pos = current_pos + direction * speed
+
+            # Validate new position
+            if (
+                0 <= new_pos[0] <= self.width
+                and 0 <= new_pos[1] <= self.height
+                and self.env.is_valid_position(new_pos[0], new_pos[1])
+            ):
+                # Apply smoothing even for fallback
+                self._smooth_agent_movement(agent_idx, tuple(new_pos))
+
+    def _apply_action_with_smoothing(self, agent_idx, action):
+        """Apply MARL action with Bezier smoothing (for Agent 2)"""
         current_pos = self.agent_positions[agent_idx]
 
-        # Action mapping: 0=N, 1=NE, 2=E, 3=SE, 4=S/Stay, 5=SW, 6=W, 7=NW
+        # Action mapping
         action_to_delta = {
-            0: (0, 1),  # North
-            1: (1, 1),  # Northeast
-            2: (1, 0),  # East
-            3: (1, -1),  # Southeast
-            4: (0, 0),  # Stay/South
-            5: (-1, -1),  # Southwest
-            6: (-1, 0),  # West
-            7: (-1, 1),  # Northwest
+            0: (0, 1),  # N
+            1: (1, 1),  # NE
+            2: (1, 0),  # E
+            3: (1, -1),  # SE
+            4: (0, 0),  # Stay
+            5: (-1, -1),  # SW
+            6: (-1, 0),  # W
+            7: (-1, 1),  # NW
         }
 
         if action in action_to_delta:
             dx, dy = action_to_delta[action]
 
-            # Calculate new position
-            new_x = current_pos[0] + dx * 0.5  # Movement speed
-            new_y = current_pos[1] + dy * 0.5
+            # Agent 2 is faster for interception
+            speed = 1.2 if agent_idx == 1 else 0.8
 
-            # Check bounds and validity
+            new_x = current_pos[0] + dx * speed
+            new_y = current_pos[1] + dy * speed
+
+            # Validate position
             if (
                 0 <= new_x <= self.width
                 and 0 <= new_y <= self.height
                 and self.env.is_valid_position(new_x, new_y)
             ):
-                self.agent_positions[agent_idx] = (new_x, new_y)
+                # Apply Bezier smoothing for realistic movement
+                self._smooth_agent_movement(agent_idx, (new_x, new_y))
+            else:
+                print(f"Agent {agent_idx + 1} movement blocked")
 
-    def _apply_actions(self, actions):
-        """Apply actions to both agents (existing method)"""
-        for i, action in enumerate(actions):
-            self._apply_action(i, action)
+    def _calculate_interception_reward(self):
+        """Reward specifically for Agent 2's interception learning"""
+        reward = 0.0
+
+        # Base reward for target capture
+        if self._is_target_captured():
+            reward += 20.0
+            return reward
+
+        # Coordination rewards between A* Agent 1 and learning Agent 2
+        target_pos = np.array(self.target.position)
+        agent1_pos = np.array(self.agent_positions[0])
+        agent2_pos = np.array(self.agent_positions[1])
+
+        # Distance rewards (closer is better)
+        dist1 = np.linalg.norm(agent1_pos - target_pos)
+        dist2 = np.linalg.norm(agent2_pos - target_pos)
+
+        # Reward Agent 2 for getting closer to target
+        reward += max(0, 5.0 - dist2) * 0.2
+
+        # Coordination bonus: Agent 2 learns to work with deterministic Agent 1
+        # Reward pincer movement (agents on opposite sides)
+        agent1_to_target = target_pos - agent1_pos
+        agent2_to_target = target_pos - agent2_pos
+
+        if (
+            np.linalg.norm(agent1_to_target) > 0
+            and np.linalg.norm(agent2_to_target) > 0
+        ):
+            agent1_norm = agent1_to_target / np.linalg.norm(agent1_to_target)
+            agent2_norm = agent2_to_target / np.linalg.norm(agent2_to_target)
+
+            dot_product = np.dot(agent1_norm, agent2_norm)
+            if dot_product < 0:  # Opposite sides
+                reward += 1.0
+
+        # Reward Agent 2 for staying at optimal interception distance from Agent 1
+        agent_distance = np.linalg.norm(agent1_pos - agent2_pos)
+        optimal_distance = 4.0  # Ideal coordination distance
+        distance_bonus = max(0, 3.0 - abs(agent_distance - optimal_distance))
+        reward += distance_bonus * 0.3
+
+        # Penalty for being too far from action
+        if dist2 > 8.0:
+            reward -= 0.2
+
+        # Small step penalty to encourage efficiency
+        reward -= 0.02
+
+        return reward
+
+    def _get_coordination_difficulty(self):
+        """Calculate how difficult the current coordination scenario is"""
+        if not self.agent2_deployed:
+            return 0.0
+
+        target_pos = np.array(self.target.position)
+        agent1_pos = np.array(self.agent_positions[0])
+        agent2_pos = np.array(self.agent_positions[1])
+
+        # Distance factors
+        dist1 = np.linalg.norm(agent1_pos - target_pos)
+        dist2 = np.linalg.norm(agent2_pos - target_pos)
+
+        # Environment complexity (number of nearby obstacles)
+        obstacle_density = len(
+            [
+                obs
+                for obs in self.env.obstacles
+                if self._obstacle_near_point(target_pos, obs, radius=5.0)
+            ]
+        )
+
+        # Target escape options
+        escape_routes = self._count_target_escape_routes()
+
+        # Normalize and combine factors
+        difficulty = (
+            min(dist1, dist2) / max(self.width, self.height) * 0.3  # Closer = harder
+            + obstacle_density
+            / max(1, len(self.env.obstacles))
+            * 0.4  # More obstacles = harder
+            + escape_routes / 8.0 * 0.3  # More escapes = harder
+        )
+
+        return min(1.0, difficulty)
+
+    def _obstacle_near_point(self, point, obstacle, radius):
+        """Check if obstacle is within radius of point"""
+        ox, oy, ow, oh = obstacle
+        # Distance from point to closest edge of obstacle
+        closest_x = max(ox, min(point[0], ox + ow))
+        closest_y = max(oy, min(point[1], oy + oh))
+
+        distance = np.linalg.norm([point[0] - closest_x, point[1] - closest_y])
+        return distance <= radius
+
+    def _get_current_phase(self):
+        """Get current phase name"""
+        if self.step_count <= 20:
+            return "pathfinding"  # Agent 1 A* pathfinding
+        else:
+            return "hybrid_coordination"  # Agent 1 (A*) + Agent 2 (MARL)
+
+    def _get_global_state(self):
+        """Get global state for QMIX mixing network"""
+        # Combine all agent positions, target position, and environment info
+        global_state = []
+
+        # Agent positions (flattened)
+        for pos in self.agent_positions:
+            global_state.extend([pos[0], pos[1]])
+
+        # Target position
+        global_state.extend([self.target.position[0], self.target.position[1]])
+
+        # Environment context
+        global_state.extend(
+            [
+                self.width / 20.0,  # Normalized environment width
+                self.height / 20.0,  # Normalized environment height
+                len(self.env.obstacles) / 10.0,  # Normalized obstacle count
+                self.step_count / 200.0,  # Normalized step count
+            ]
+        )
+
+        # Deployment status
+        global_state.extend(
+            [
+                1.0 if self.agent1_deployed else 0.0,
+                1.0 if self.agent2_deployed else 0.0,
+                1.0 if self.pursuit_active else 0.0,
+            ]
+        )
+
+        return np.array(global_state, dtype=np.float32)
+
+    def _get_individual_observations(self):
+        """Get individual observations for each agent"""
+        observations = []
+
+        for i, agent_pos in enumerate(self.agent_positions):
+            obs = []
+
+            # Agent's own position
+            obs.extend([agent_pos[0], agent_pos[1]])
+
+            # Target position (relative to agent)
+            target_pos = self.target.position
+            obs.extend(
+                [
+                    target_pos[0] - agent_pos[0],  # Relative x
+                    target_pos[1] - agent_pos[1],  # Relative y
+                ]
+            )
+
+            # Other agent position (relative)
+            other_agent_idx = 1 - i  # 0 -> 1, 1 -> 0
+            if other_agent_idx < len(self.agent_positions):
+                other_pos = self.agent_positions[other_agent_idx]
+                obs.extend(
+                    [
+                        other_pos[0] - agent_pos[0],  # Relative x
+                        other_pos[1] - agent_pos[1],  # Relative y
+                    ]
+                )
+            else:
+                obs.extend([0.0, 0.0])  # No other agent
+
+            # Distance to target
+            target_distance = np.linalg.norm(np.array(target_pos) - np.array(agent_pos))
+            obs.append(target_distance)
+
+            # Distance to other agent
+            if other_agent_idx < len(self.agent_positions):
+                other_distance = np.linalg.norm(
+                    np.array(self.agent_positions[other_agent_idx])
+                    - np.array(agent_pos)
+                )
+            else:
+                other_distance = 0.0
+            obs.append(other_distance)
+
+            # Environment context
+            obs.extend(
+                [
+                    self.width / 20.0,  # Normalized environment width
+                    self.height / 20.0,  # Normalized environment height
+                    len(self.env.obstacles) / 10.0,  # Normalized obstacle count
+                ]
+            )
+
+            # Agent-specific deployment status
+            obs.extend(
+                [
+                    1.0
+                    if (i == 0 and self.agent1_deployed)
+                    else 0.0,  # This agent deployed
+                    1.0
+                    if (i == 1 and self.agent2_deployed)
+                    else 0.0,  # Other agent deployed
+                    1.0 if self.pursuit_active else 0.0,  # Pursuit active
+                ]
+            )
+
+            # Phase information
+            if self.step_count <= 20:
+                phase_encoding = [1.0, 0.0]  # Pathfinding phase
+            else:
+                phase_encoding = [0.0, 1.0]  # Coordination phase
+            obs.extend(phase_encoding)
+
+            # Nearby obstacles (simplified - count within radius)
+            obstacle_count = 0
+            for ox, oy, ow, oh in self.env.obstacles:
+                obstacle_center = (ox + ow / 2, oy + oh / 2)
+                distance_to_obstacle = np.linalg.norm(
+                    np.array(obstacle_center) - np.array(agent_pos)
+                )
+                if distance_to_obstacle < 5.0:  # Within 5 units
+                    obstacle_count += 1
+
+            obs.append(obstacle_count / 5.0)  # Normalized
+
+            # Step count (normalized)
+            obs.append(self.step_count / 200.0)
+
+            observations.append(np.array(obs, dtype=np.float32))
+
+        return observations
+
+    def _get_random_valid_target_position(self):
+        """Get a random valid position for the target"""
+        max_attempts = 50
+        for _ in range(max_attempts):
+            x = random.uniform(2.0, self.width - 2.0)
+            y = random.uniform(2.0, self.height - 2.0)
+
+            # Check if position is valid and not too close to agents
+            if self.env.is_valid_position(x, y):
+                # Ensure target is not too close to starting agent positions
+                min_distance_to_agents = min(
+                    [
+                        np.linalg.norm(np.array([x, y]) - np.array(agent_pos))
+                        for agent_pos in self.agent_positions
+                    ]
+                )
+
+                if min_distance_to_agents > 3.0:  # Minimum distance from agents
+                    return (x, y)
+
+        # Fallback position if no valid position found
+        return (self.width / 2.0, self.height / 2.0)
+
+    def _is_target_captured(self):
+        """Simple capture detection"""
+        if not (self.agent1_deployed and self.agent2_deployed):
+            return False
+
+        target_pos = np.array(self.target.position)
+        agent1_pos = np.array(self.agent_positions[0])
+        agent2_pos = np.array(self.agent_positions[1])
+
+        # Calculate distances
+        dist1 = np.linalg.norm(agent1_pos - target_pos)
+        dist2 = np.linalg.norm(agent2_pos - target_pos)
+
+        # Simple proximity capture
+        capture_radius = 2.5
+        if dist1 <= capture_radius and dist2 <= capture_radius:
+            print(f"🏆 TARGET CAPTURED!")
+            print(f"   Agent 1 distance: {dist1:.2f}")
+            print(f"   Agent 2 distance: {dist2:.2f}")
+            return True
+
+        return False
+
+    def _check_done(self):
+        """Check if episode is done"""
+        # Done if captured or max steps reached
+        return self._is_target_captured() or self.step_count >= self.max_steps
+
+    def _count_target_escape_routes(self):
+        """Simple escape route counting"""
+        if not hasattr(self, "target") or self.target is None:
+            return 4
+
+        try:
+            target_pos = self.target.position
+            escape_count = 0
+
+            # Check 4 main directions
+            directions = [(0, 2), (2, 0), (0, -2), (-2, 0)]  # N, E, S, W
+
+            for dx, dy in directions:
+                check_x = target_pos[0] + dx
+                check_y = target_pos[1] + dy
+
+                # Check if this escape route is clear
+                if (
+                    0 <= check_x <= self.width
+                    and 0 <= check_y <= self.height
+                    and self.env.is_valid_position(check_x, check_y)
+                ):
+                    escape_count += 1
+
+            return escape_count
+
+        except Exception as e:
+            return 4  # Default
 
 
 def create_test_environments():

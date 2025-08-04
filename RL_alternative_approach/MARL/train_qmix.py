@@ -1,19 +1,17 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 import random
 import time
 from collections import deque
 import pickle
 from adaptive_expert_system import AdaptivePathfindingExpert
 from qmix_marl import QMIX
-from pursuit_environment import PursuitEnvironment, create_test_environments
+from pursuit_environment import create_test_environments
 
 # Add pathfinding integration imports
 try:
     from expert_pathfinding_system import PathfindingFlowExpertSystem
-    from pathfinding import AStar
 
     PATHFINDING_AVAILABLE = True
     print("Pathfinding integration available")
@@ -284,8 +282,8 @@ class QMixTrainer:
         try:
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
-        except:
-            pass  # In case of display issues
+        except Exception:
+            pass
 
     def save_training_stats(self, filename):
         """Save training statistics to file"""
@@ -506,7 +504,7 @@ class QMixTrainer:
         """Training with pathfinding flow imitation"""
         print("Starting QMIX training with pathfinding flow imitation...")
         print(f"Expert guidance ratio: {expert_ratio}")
-        print(f"Both agents start from (0.5, 0.5) every episode")
+        print("Both agents start from (0.5, 0.5) every episode")
 
         # Create environments
         environments = create_test_environments()
@@ -622,105 +620,74 @@ class QMixTrainer:
             # Flow tracking
             episode_expert_matches = 0
             episode_total_actions = 0
+            coordination_reward = 0.0
+            training_steps = 0
 
             while not done and step < env.max_steps:
-                # Decide whether to use expert guidance
-                use_expert_this_step = (
-                    self.use_pathfinding_guidance
-                    and expert_system is not None
-                    and random.random() < expert_ratio
-                    and episode < num_episodes * 0.8  # Reduce expert guidance later
-                )
+                step += 1
 
-                if use_expert_this_step:
-                    # Get expert actions following the flow
-                    try:
-                        expert_actions = (
-                            expert_system.generate_expert_actions_with_flow(env)
-                        )
-                        actions = expert_actions.copy()
+                # Get actions - only Agent 2 action matters for learning
+                actions = agent.get_actions(individual_obs)
 
-                        # Count deployed agents for matching
-                        deployed_count = sum([env.agent1_deployed, env.agent2_deployed])
-                        episode_expert_matches += deployed_count
-                    except Exception as e:
-                        actions = agent.get_actions(individual_obs)
-                        expert_actions = actions
-                        print(f"Expert system failed: {e}")
-                else:
-                    # Use learned policy
-                    actions = agent.get_actions(individual_obs)
-
-                    # Get expert actions for comparison
-                    if self.use_pathfinding_guidance and expert_system is not None:
-                        try:
-                            expert_actions = (
-                                expert_system.generate_expert_actions_with_flow(env)
-                            )
-                            # Count matches for deployed agents only
-                            for i, (action, expert_action) in enumerate(
-                                zip(actions, expert_actions)
-                            ):
-                                if (i == 0 and env.agent1_deployed) or (
-                                    i == 1 and env.agent2_deployed
-                                ):
-                                    if action == expert_action:
-                                        episode_expert_matches += 1
-                        except:
-                            expert_actions = actions
-                    else:
-                        expert_actions = actions
-
-                # Count total actions for deployed agents
-                episode_total_actions += sum([env.agent1_deployed, env.agent2_deployed])
-
-                # Take step
+                # Take step in hybrid environment
                 (next_global_state, next_individual_obs), reward, done, info = env.step(
                     actions
                 )
 
-                # Add flow-based reward shaping
-                if self.use_pathfinding_guidance and expert_system is not None:
-                    flow_reward = self.calculate_flow_reward(
-                        env, actions, expert_actions
+                # Track phase information
+                phase = info.get("phase", "unknown")
+                training_phase = info.get("training_phase", False)
+                agent1_learning = info.get("agent1_learning", False)
+                agent2_learning = info.get("agent2_learning", False)
+
+                if step <= 25:  # Print first 25 steps for debugging
+                    print(f"Episode {episode}, Step {step}: {phase.upper()}")
+                    print(
+                        f"  Agent 1: {'Learning' if agent1_learning else 'A* Pathfinding'}"
                     )
-                    enhanced_reward = reward + self.guidance_weight * flow_reward
-                else:
-                    enhanced_reward = reward
+                    print(f"  Agent 2: {'Learning' if agent2_learning else 'Waiting'}")
+                    print(f"  Training: {training_phase}")
+                    print(f"  Reward: {reward:.3f}")
 
-                # Store experience
-                agent.store_experience(
-                    individual_obs, actions, enhanced_reward, next_individual_obs, done
-                )
+                # ONLY STORE EXPERIENCE AND TRAIN DURING HYBRID COORDINATION PHASE
+                if training_phase and agent2_learning:
+                    if step <= 25:
+                        print(
+                            f"  🎓 HYBRID TRAINING: Agent 2 learning coordination with A* Agent 1"
+                        )
 
-                # Train
-                loss = agent.train()
-                if loss:
-                    self.training_stats["losses"].append(loss)
+                    # Store experience for Agent 2's learning
+                    agent.store_experience(
+                        individual_obs, actions, reward, next_individual_obs, done
+                    )
+
+                    # Train Agent 2's network
+                    loss = agent.train()
+                    if loss:
+                        self.training_stats["losses"].append(loss)
+
+                    coordination_reward += reward
+                    training_steps += 1
+                elif not training_phase:
+                    if step <= 25:
+                        print(f"  ⏸️  NO TRAINING: Agent 1 pathfinding phase")
 
                 # Update state
                 global_state = next_global_state
                 individual_obs = next_individual_obs
-                episode_reward += enhanced_reward
-                step += 1
+                episode_reward += reward
 
-                # Store current scenario for potential expert demonstration
-                current_scenario = {
-                    "agent1_pos": env.agent_positions[0],
-                    "agent2_pos": env.agent_positions[1],
-                    "target_pos": env.target.position,
-                    "target_speed": env.target.speed,
-                    "agent1_deployed": env.agent1_deployed,
-                    "agent2_deployed": env.agent2_deployed,
-                    "pursuit_active": env.pursuit_active,
-                    "step_count": env.step_count,
-                    "episode": episode,
-                    "step": step,
-                }
-
-                # Visualize occasionally
-                if episode % visualize_every == 0 and step % 20 == 0:
-                    self.visualize_episode_with_flow(env, episode, step)
+            # Update episode summary to reflect hybrid learning
+            print(f"\n📊 Episode {episode} Summary:")
+            print(f"   Total steps: {step}")
+            print(f"   Agent 2 training steps: {training_steps}")
+            print(f"   Agent 1: A* pathfinding (deterministic)")
+            print(f"   Agent 2: MARL coordination (learning)")
+            print(f"   Coordination reward: {coordination_reward:.2f}")
+            print(f"   Captured: {info.get('captured', False)}")
+            print(
+                f"   Coordination difficulty: {info.get('coordination_difficulty', 0):.3f}"
+            )
 
             # Episode finished
             episode_time = time.time() - episode_start
@@ -994,9 +961,7 @@ class QMixTrainer:
             print(f"❌ Failed to generate adaptive demonstration: {e}")
 
 
-# Update the main section
 if __name__ == "__main__":
-    # Check device availability
     if torch.backends.mps.is_available():
         device = "mps"
         print("Using MPS (Apple Silicon GPU)")
@@ -1006,34 +971,20 @@ if __name__ == "__main__":
     else:
         device = "cpu"
         print("Using CPU")
+    print("=== HYBRID QMIX TRAINING ===")
+    print("Agent 1: Deterministic A* pathfinding (no learning)")
+    print("Agent 2: MARL coordination learning")
+    print("Focus: Agent 2 learns interception strategies")
 
-    # Choose training mode
-    use_pathfinding_guidance = True  # Set to False for standard QMIX training
+    trainer = QMixTrainer(
+        device=device,
+        use_pathfinding_guidance=False,  # No expert guidance needed for A*
+        guidance_weight=0.0,
+    )
 
-    if use_pathfinding_guidance and PATHFINDING_AVAILABLE:
-        print("=== PATHFINDING FLOW IMITATION LEARNING ===")
-        trainer = QMixTrainer(
-            device=device,
-            use_pathfinding_guidance=True,
-            guidance_weight=0.4,
-        )
-
-        # Use more forgiving training parameters:
-        trained_agent = trainer.train(
-            num_episodes=4000,  # More episodes
-            visualize_every=200,  # Less frequent visualization
-            save_every=500,
-            expert_ratio=0.8,  # Higher expert guidance
-        )
-    else:
-        if use_pathfinding_guidance and not PATHFINDING_AVAILABLE:
-            print(
-                "Pathfinding guidance requested but not available, falling back to standard training"
-            )
-
-        print("=== STANDARD QMIX TRAINING ===")
-        trainer = QMixTrainer(device=device, use_pathfinding_guidance=False)
-        trained_agent = trainer.train(num_episodes=3000, visualize_every=50)
-
-    print("Training completed! Press Enter to close plots and exit...")
-    input()
+    trained_agent = trainer.train(
+        num_episodes=3000,
+        visualize_every=100,
+        save_every=500,
+        expert_ratio=0.0,  # No expert ratio needed
+    )

@@ -552,7 +552,9 @@ class MARLPursuitSystem:
         agent_positions = [start_pos] + [None] * (self.max_agents - 1)
 
         # Initialize target
-        from pathfinding import VehicleTarget  # Import your target class
+        from RL_alternative_approach.MARL.pathfinding_marl import (
+            VehicleTarget,
+        )  # Import your target class
 
         target = VehicleTarget(env, target_start, speed=0.25)
 
@@ -770,7 +772,10 @@ class MARLPursuitSystem:
 # Integration function with your existing code
 def integrate_marl_with_pathfinding():
     """Example of how to integrate MARL with your existing pathfinding code"""
-    from pathfinding import create_sample_neighborhood, AStar
+    from RL_alternative_approach.MARL.pathfinding_marl import (
+        create_sample_neighborhood,
+        AStar,
+    )
 
     # Create environment
     env = create_sample_neighborhood()

@@ -350,3 +350,135 @@ class QMIX:
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.epsilon = checkpoint["epsilon"]
         self.training_step = checkpoint["training_step"]
+
+
+class HybridQMIX(QMIX):
+    """Hybrid QMIX: Agent 1 deterministic (A*), Agent 2 learns"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Only Agent 2 has a trainable network
+        self.learning_agents = [False, True]  # Agent 1 deterministic, Agent 2 learns
+        print("🔧 Hybrid QMIX initialized: Agent 1 (A*), Agent 2 (Learning)")
+
+    def get_actions(self, states, epsilon=None):
+        """Get actions - Agent 1 uses A* (handled in environment), Agent 2 learns"""
+        if epsilon is None:
+            epsilon = self.epsilon
+
+        actions = []
+
+        # Agent 1: Placeholder action (environment handles A* movement)
+        actions.append(4)  # Stay action - not used by environment
+
+        # Agent 2: Learned action using QMIX
+        with torch.no_grad():
+            state = torch.FloatTensor(states[1]).unsqueeze(0).to(self.device)
+
+            if random.random() < epsilon:
+                # Random exploration for Agent 2
+                action = random.randint(0, self.action_dim - 1)
+            else:
+                # Greedy action for Agent 2
+                q_values = self.agent_networks[1](state)
+                action = q_values.argmax().item()
+
+            actions.append(action)
+
+        return actions
+
+    def store_experience(self, states, actions, reward, next_states, done):
+        """Store experience - focus on Agent 2's learning"""
+        # Create global states for mixing network
+        global_state = self._combine_states(states)
+        next_global_state = self._combine_states(next_states)
+
+        # Store full experience but only Agent 2 will learn from it
+        self.memory.push(global_state, actions, reward, next_global_state, done)
+
+    def train(self):
+        """Modified training - only Agent 2 learns, Agent 1 stays deterministic"""
+        if len(self.memory) < self.batch_size:
+            return None
+
+        # Sample batch
+        states, actions, rewards, next_states, dones = self.memory.sample(
+            self.batch_size
+        )
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        rewards = rewards.to(self.device)
+        next_states = next_states.to(self.device)
+        dones = dones.to(self.device)
+
+        # Current Q-values: Agent 1 gets dummy value, Agent 2 gets learned Q-value
+        batch_size = states.size(0)
+
+        # Agent 1: Dummy Q-value (since it uses deterministic A*)
+        agent1_dummy_q = torch.ones(batch_size, 1).to(self.device) * 0.5
+
+        # Agent 2: Learned Q-value
+        agent2_state = self._extract_agent_state(states, 1)
+        agent2_q_values = self.agent_networks[1](agent2_state)
+        agent2_q = agent2_q_values.gather(1, actions[:, 1].unsqueeze(1))
+
+        # Combine for mixing network
+        agent_qs = torch.cat([agent1_dummy_q, agent2_q], dim=1)
+
+        # Mix Q-values
+        q_tot = self.mixing_network(agent_qs, states)
+
+        # Target Q-values
+        with torch.no_grad():
+            # Agent 1: Dummy target Q-value
+            next_agent1_dummy = torch.ones(batch_size, 1).to(self.device) * 0.5
+
+            # Agent 2: Target Q-value
+            next_agent2_state = self._extract_agent_state(next_states, 1)
+            next_agent2_q = (
+                self.target_agent_networks[1](next_agent2_state).max(1)[0].unsqueeze(1)
+            )
+
+            # Combine target Q-values
+            next_agent_qs = torch.cat([next_agent1_dummy, next_agent2_q], dim=1)
+            next_q_tot = self.target_mixing_network(next_agent_qs, next_states)
+
+            target_q = rewards.unsqueeze(1) + self.gamma * next_q_tot * (
+                ~dones
+            ).unsqueeze(1)
+
+        # Loss calculation
+        loss = F.mse_loss(q_tot, target_q)
+
+        # Optimize ONLY Agent 2's network and mixing network
+        agent2_params = list(self.agent_networks[1].parameters())
+        mixing_params = list(self.mixing_network.parameters())
+
+        # Create optimizer for only the learning components
+        if not hasattr(self, "hybrid_optimizer"):
+            self.hybrid_optimizer = torch.optim.Adam(
+                agent2_params + mixing_params, lr=self.optimizer.param_groups[0]["lr"]
+            )
+
+        self.hybrid_optimizer.zero_grad()
+        loss.backward()
+
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(agent2_params + mixing_params, max_norm=10)
+
+        self.hybrid_optimizer.step()
+
+        # Update target networks
+        self.training_step += 1
+        if self.training_step % self.target_update_freq == 0:
+            self.update_target_networks()
+
+        # Decay epsilon for Agent 2 only
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+        return loss.item()
+
+
+# Create alias for backward compatibility
+QMIX = HybridQMIX
